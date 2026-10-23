@@ -1157,6 +1157,21 @@ func TestChatEventTypeString(t *testing.T) {
 	}
 }
 
+func TestChatEventFrameCarriesToolDuration(t *testing.T) {
+	frame := chatEventFrame(agent.ChatEvent{
+		Type:     agent.ChatEventToolResult,
+		Name:     "terminal",
+		Result:   "command timed out",
+		Duration: 30 * time.Second,
+	})
+	if frame["type"] != "observe" || frame["duration_ms"] != int64(30000) {
+		t.Fatalf("frame = %#v", frame)
+	}
+	if _, ok := frame["duration_ms"].(int64); !ok {
+		t.Fatalf("duration_ms type = %T", frame["duration_ms"])
+	}
+}
+
 func TestPermString(t *testing.T) {
 	tests := []struct {
 		name     string

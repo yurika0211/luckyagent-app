@@ -321,8 +321,8 @@ func TestStreamChatAnnotatesToolGroupingAndVisibility(t *testing.T) {
 			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
 			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"agent ui"}`}
 			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "skill_read", Args: `{"name":"obsidian"}`}
-			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "web_search", Result: "ok"}
-			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "skill_read", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "web_search", Result: "ok", Duration: 1500 * time.Millisecond}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "skill_read", Result: "ok", Duration: 20 * time.Millisecond}
 			ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "done"}
 			close(ch)
 			return ch, nil
@@ -366,6 +366,9 @@ func TestStreamChatAnnotatesToolGroupingAndVisibility(t *testing.T) {
 	}
 	if toolCalls[0].Visibility != "visible" {
 		t.Fatalf("expected web_search visible, got %s", toolCalls[0].Visibility)
+	}
+	if toolResults[0].DurationMS != 1500 || toolResults[1].DurationMS != 20 {
+		t.Fatalf("tool result durations = %+v", toolResults)
 	}
 	if toolCalls[1].Visibility != "compact" {
 		t.Fatalf("expected skill_read compact, got %s", toolCalls[1].Visibility)

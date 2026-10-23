@@ -10,7 +10,7 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
-	github.com/yurika0211/lucky-agent/agent v0.3.0
+	github.com/yurika0211/lucky-agent/agent v0.3.1-0.20261023160908-2966562996c0
 	github.com/yurika0211/luckyagent-plugins v0.1.0
 	github.com/yurika0211/luckyagent-runtime v0.3.0
 	golang.org/x/term v0.41.0
@@ -75,7 +75,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	github.com/yurika0211/luckyagent-api v0.2.2
+	github.com/yurika0211/luckyagent-api v0.2.3-0.20261023160721-56f596e9358b
 	github.com/yurika0211/luckyagent-gateway v0.2.2
 	github.com/yurika0211/luckyagent-tools v0.2.3
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
