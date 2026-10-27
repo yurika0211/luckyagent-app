@@ -61,3 +61,32 @@ func TestREPLSessionCommandsRejectAmbiguousPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestREPLSwitchDisplaysStoredRecapWithoutAgent(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := mgr.Ensure("current-session")
+	target := mgr.Ensure("recap-session")
+	target.SetTitle("Manual title")
+	target.AddMessage("user", "question")
+	target.AddMessage("assistant", "answer")
+	if err := target.Save(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, version, err := target.RecapSnapshot(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.UpdateRecap("你问了 question。", version); err != nil {
+		t.Fatal(err)
+	}
+	out, err := captureStdout(t, func() error {
+		handleSessionCommand("switch recap", nil, mgr, &current)
+		return nil
+	})
+	if err != nil || current != target || target.Title != "Manual title" || !strings.Contains(out, "◇ 你问了 question。") {
+		t.Fatalf("switch output=%q error=%v", out, err)
+	}
+}

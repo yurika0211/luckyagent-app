@@ -174,8 +174,16 @@ func runSessionList() error {
 	for _, info := range infos {
 		fmt.Printf("%s  msgs=%d  bytes=%d  format=%s  %s\n",
 			info.ID, info.MessageCount, info.ByteSize, info.Format, info.Title)
+		printSessionRecap(info.Recap)
 	}
 	return nil
+}
+
+// Display the runtime's preview verbatim; clients never generate a second one.
+func printSessionRecap(recap string) {
+	if recap = strings.TrimSpace(recap); recap != "" {
+		fmt.Printf("  ◇ %s\n", recap)
+	}
 }
 
 func runSessionMigrate(idPrefix string, all bool) error {

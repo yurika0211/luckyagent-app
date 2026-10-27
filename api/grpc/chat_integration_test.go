@@ -88,6 +88,11 @@ func TestGRPCChatPersistsAndContinuesSessionWithActualUsage(t *testing.T) {
 			t.Error(err)
 			return
 		}
+		if len(req.Messages) > 0 && strings.HasPrefix(req.Messages[0].Content, "Write exactly one concise sentence to help the user recall") {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"You asked a question."}}]}`)
+			return
+		}
 		if calls.Add(1) == 2 {
 			for _, message := range req.Messages {
 				if message.Role == "assistant" && message.Content == "first answer" {

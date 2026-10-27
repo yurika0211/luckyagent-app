@@ -1117,16 +1117,18 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			sessions = s.agent.Sessions().ListInfo()
 		}
 		type sessionInfo struct {
-			ID           string `json:"id"`
-			Title        string `json:"title"`
-			AgentRole    string `json:"agent_role,omitempty"`
-			Pinned       bool   `json:"pinned,omitempty"`
-			Project      string `json:"project,omitempty"`
-			MessageCount int    `json:"message_count"`
-			ByteSize     int64  `json:"byte_size,omitempty"`
-			Format       string `json:"format,omitempty"`
-			CreatedAt    string `json:"created_at"`
-			UpdatedAt    string `json:"updated_at"`
+			ID             string     `json:"id"`
+			Title          string     `json:"title"`
+			Recap          string     `json:"recap,omitempty"`
+			RecapUpdatedAt *time.Time `json:"recap_updated_at,omitempty"`
+			AgentRole      string     `json:"agent_role,omitempty"`
+			Pinned         bool       `json:"pinned,omitempty"`
+			Project        string     `json:"project,omitempty"`
+			MessageCount   int        `json:"message_count"`
+			ByteSize       int64      `json:"byte_size,omitempty"`
+			Format         string     `json:"format,omitempty"`
+			CreatedAt      string     `json:"created_at"`
+			UpdatedAt      string     `json:"updated_at"`
 		}
 
 		total := len(sessions)
@@ -1136,16 +1138,18 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		infos := make([]sessionInfo, 0, len(page))
 		for _, sess := range page {
 			infos = append(infos, sessionInfo{
-				ID:           sess.ID,
-				Title:        sess.Title,
-				AgentRole:    sess.AgentRole,
-				Pinned:       sess.Pinned,
-				Project:      sess.Project,
-				MessageCount: sess.MessageCount,
-				ByteSize:     sess.ByteSize,
-				Format:       sess.Format,
-				CreatedAt:    sess.CreatedAt.Format(time.RFC3339),
-				UpdatedAt:    sess.UpdatedAt.Format(time.RFC3339),
+				ID:             sess.ID,
+				Title:          sess.Title,
+				Recap:          sess.Recap,
+				RecapUpdatedAt: sess.RecapUpdatedAt,
+				AgentRole:      sess.AgentRole,
+				Pinned:         sess.Pinned,
+				Project:        sess.Project,
+				MessageCount:   sess.MessageCount,
+				ByteSize:       sess.ByteSize,
+				Format:         sess.Format,
+				CreatedAt:      sess.CreatedAt.Format(time.RFC3339),
+				UpdatedAt:      sess.UpdatedAt.Format(time.RFC3339),
 			})
 		}
 
@@ -1302,6 +1306,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("profile")), "1") || strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("profile")), "true") {
 		payload["agent_system_prompt"] = systemPrompt
 	}
+	if recap, at := sess.Recap(); recap != "" {
+		payload["recap"], payload["recap_updated_at"] = recap, at
+	}
 
 	// Without a limit the whole history is returned, as before. With one, page
 	// backwards from the newest message: offset counts messages skipped from
@@ -1344,7 +1351,7 @@ func (s *Server) patchSession(w http.ResponseWriter, r *http.Request, sess *sess
 		return
 	}
 	pinned, project := sess.Organization()
-	s.sendJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"id":            sess.ID,
 		"title":         sess.Title,
 		"pinned":        pinned,
@@ -1352,7 +1359,11 @@ func (s *Server) patchSession(w http.ResponseWriter, r *http.Request, sess *sess
 		"message_count": sess.MessageCount(),
 		"created_at":    sess.CreatedAt.Format(time.RFC3339),
 		"updated_at":    sess.UpdatedAt.Format(time.RFC3339),
-	})
+	}
+	if recap, at := sess.Recap(); recap != "" {
+		payload["recap"], payload["recap_updated_at"] = recap, at
+	}
+	s.sendJSON(w, http.StatusOK, payload)
 }
 
 func sessionStorageStatus(err error) int {

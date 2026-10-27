@@ -782,7 +782,20 @@ func TestHandleChatSyncRunsLoopOncePerRequest(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		callCount.Add(1)
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		// The background recap is a separate tool-free request, not a second
+		// execution of the user's agent loop.
+		if len(req.Messages) == 0 || !strings.HasPrefix(req.Messages[0].Content, "Write exactly one concise sentence to help the user recall") {
+			callCount.Add(1)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 	}))

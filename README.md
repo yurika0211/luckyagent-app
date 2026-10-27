@@ -31,6 +31,9 @@ states, local authentication and gRPC integration, are documented in
 [API execution and recovery](docs/api-reliability.md).
 Session history errors, deletion cancellation and queued WebSocket handle
 ownership are described in [session reliability](docs/session-reliability.md).
+Optional runtime-owned previews are exposed through HTTP and CLI as described
+in [session recaps](docs/session-recap.md); generation requires the companion
+Agent/runtime changes.
 
 `lh plugin` manages declarative plugin installations without constructing an
 Agent. Enabled plugins add namespaced commands to CLI, HTTP and gateway turns;

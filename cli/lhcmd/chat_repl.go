@@ -433,6 +433,7 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 					fmt.Printf("  %s | %s | %d 条消息 | %s%s\n",
 						info.ID[:8], title, info.MessageCount,
 						info.UpdatedAt.Format("2006-01-02 15:04"), active)
+					printSessionRecap(info.Recap)
 				}
 			}
 			return true, false
@@ -1422,6 +1423,8 @@ func handleSessionCommand(arg string, a *agent.Agent, mgr *session.Manager, curr
 		} else {
 			*currentSession = found
 			fmt.Printf("✅ 已切换到会话: %s (%d 条消息)\n", found.ID[:8], found.MessageCount())
+			recap, _ := found.Recap()
+			printSessionRecap(recap)
 		}
 
 	case "search":
@@ -1442,6 +1445,7 @@ func handleSessionCommand(arg string, a *agent.Agent, mgr *session.Manager, curr
 				}
 				fmt.Printf("  %s | %s | %d 条消息\n",
 					info.ID[:8], title, info.MessageCount)
+				printSessionRecap(info.Recap)
 			}
 		}
 
