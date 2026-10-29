@@ -242,18 +242,13 @@ func (h *AgentHandler) HandleReconnect(client *Client, msg *Message) {
 		return
 	}
 	for _, event := range events {
-		if !send(event) {
+		if !send(replayed(event)) {
 			return
 		}
 	}
 	for _, run := range h.store.ActiveRuns(client.SessionID) {
-		state := "queued"
-		message := "message queued"
-		if run.State == "running" {
-			state = "running"
-			message = "agent is running"
-		}
-		status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: state, Message: message})
+		status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: runActivityState(run.State), Message: runActivityMessage(run.State)})
+		status = withReplay(status)
 		status.ParentID = run.ParentID
 		status.RunID = run.ID
 		status.ID = ""
@@ -308,7 +303,7 @@ func (h *AgentHandler) handleCancel(client *Client, msg *Message) {
 	cancelled := h.cancelSession(sessionID)
 	if len(cancelled) == 0 {
 		status, _ := NewMessage(TypeStatus, sessionID, StatusData{
-			State:   "idle",
+			State:   "cancelled",
 			Message: "cancelled",
 		})
 		if msg != nil {
@@ -318,7 +313,7 @@ func (h *AgentHandler) handleCancel(client *Client, msg *Message) {
 	} else {
 		for _, run := range cancelled {
 			status, _ := NewMessage(TypeStatus, sessionID, StatusData{
-				State:   "idle",
+				State:   "cancelled",
 				Message: "cancelled",
 			})
 			status.ParentID = run.parentID
@@ -524,7 +519,7 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 	runner.queue = append(runner.queue, run)
 	h.mu.Unlock()
 	queued, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
-		State:   map[bool]string{true: "queued", false: "thinking"}[wasBusy],
+		State:   "queued",
 		Message: map[bool]string{true: "message queued", false: "processing your message"}[wasBusy],
 	})
 	queued.ParentID = run.parentID
@@ -623,6 +618,10 @@ func (h *AgentHandler) finishRun(sessionID string, run *queuedRun, err error) {
 	}
 	if updateErr := h.store.UpdateRun(sessionID, run.id, func(record *persistedRun) { record.State = state }); updateErr != nil {
 		h.failPersistence(run.client, sessionID, run.id, run.parentID, updateErr)
+	} else if persistErr == nil {
+		// The run record is already terminal. Losing this frame must not leave
+		// the activity query saying the session is still working.
+		h.emit(run.client, sessionID, run.id, terminalStatus(sessionID, run.parentID, run.id, state))
 	}
 	h.mu.Lock()
 	runner.active = nil
@@ -691,12 +690,22 @@ func (h *AgentHandler) failPersistence(client *Client, sessionID, runID, parentI
 	msg, _ := NewMessage(TypeError, sessionID, ErrorData{Code: "PERSIST_FAILED", Message: "run persistence failed; execution stopped"})
 	msg.RunID, msg.ParentID = runID, parentID
 	msg.ID, msg.EventID = "", ""
+	// The terminal frame is best-effort and not replayable. emit would write
+	// through the same failing store and could hide the original failure.
+	// The activity query still reads the terminal record written before this call.
+	terminal := terminalStatus(sessionID, parentID, runID, "error")
+	terminal.ID, terminal.EventID = "", ""
 	if sink != nil {
 		sink(sessionID, msg)
+		sink(sessionID, terminal)
 	} else if client != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := client.SendReliable(ctx, msg); err != nil {
+			client.Close()
+			return
+		}
+		if err := client.SendReliable(ctx, terminal); err != nil {
 			client.Close()
 		}
 	}
@@ -734,12 +743,13 @@ func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatDa
 func (h *AgentHandler) syncChatRun(ctx context.Context, client *Client, data ChatData, parentID, runID string) error {
 	// 发送 executing 状态
 	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
-		State:   "executing",
+		State:   "running",
 		Message: "agent is running",
 	})
 	status.ParentID = parentID
 	h.emit(client, client.SessionID, runID, status)
 	if ctx.Err() != nil {
+		h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 		return ctx.Err()
 	}
 
@@ -747,6 +757,8 @@ func (h *AgentHandler) syncChatRun(ctx context.Context, client *Client, data Cha
 	if err != nil {
 		if ctx.Err() == nil {
 			h.sendSessionHistoryError(client, runID, parentID, err)
+		} else {
+			h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 		}
 		return err
 	}
@@ -758,6 +770,7 @@ func (h *AgentHandler) syncChatRun(ctx context.Context, client *Client, data Cha
 	result, iterations, err := h.syncTurn(ctx, sess, sessionID, turn, data)
 	if err != nil {
 		if ctx.Err() != nil {
+			h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 			return ctx.Err()
 		}
 		if errors.Is(err, session.ErrSessionDeleted) {
@@ -770,6 +783,7 @@ func (h *AgentHandler) syncChatRun(ctx context.Context, client *Client, data Cha
 		})
 		errMsg.ParentID = parentID
 		h.emit(client, client.SessionID, runID, errMsg)
+		h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "error"))
 		return err
 	}
 	var createdAt *time.Time
@@ -808,12 +822,7 @@ func (h *AgentHandler) syncChatRun(ctx context.Context, client *Client, data Cha
 	endMsg.ParentID = parentID
 	h.emit(client, client.SessionID, runID, endMsg)
 
-	// 发送 idle 状态
-	idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
-		State: "idle",
-	})
-	idle.ParentID = parentID
-	h.emit(client, client.SessionID, runID, idle)
+	h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "completed"))
 	return nil
 }
 
@@ -825,12 +834,13 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data ChatData, parentID, runID string) error {
 	// 发送 executing 状态
 	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
-		State:   "executing",
+		State:   "running",
 		Message: "agent is streaming",
 	})
 	status.ParentID = parentID
 	h.emit(client, client.SessionID, runID, status)
 	if ctx.Err() != nil {
+		h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 		return ctx.Err()
 	}
 
@@ -838,6 +848,8 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 	if err != nil {
 		if ctx.Err() == nil {
 			h.sendSessionHistoryError(client, runID, parentID, err)
+		} else {
+			h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 		}
 		return err
 	}
@@ -856,6 +868,7 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 	}
 	if err != nil {
 		if ctx.Err() != nil {
+			h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 			return ctx.Err()
 		}
 		if errors.Is(err, session.ErrSessionDeleted) {
@@ -868,6 +881,7 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 		})
 		errMsg.ParentID = parentID
 		h.emit(client, client.SessionID, runID, errMsg)
+		h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "error"))
 		return err
 	}
 
@@ -917,12 +931,6 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 		return true
 	}
 
-	sendIdle := func() {
-		idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: "idle"})
-		idle.ParentID = parentID
-		h.emit(client, client.SessionID, runID, idle)
-	}
-
 	sendError := func(err error) {
 		if err == nil {
 			err = errors.New("agent stream failed")
@@ -933,17 +941,19 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 		})
 		errMsg.ParentID = parentID
 		h.emit(client, client.SessionID, runID, errMsg)
-		sendIdle()
+		h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "error"))
 	}
 
 	for {
 		var evt agent.ChatEvent
 		select {
 		case <-ctx.Done():
+			h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 			return ctx.Err()
 		case next, ok := <-streamCh:
 			if !ok {
 				if ctx.Err() != nil {
+					h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 					return ctx.Err()
 				}
 				err = errors.New("agent stream ended without a completed result")
@@ -953,6 +963,7 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 			evt = next
 		}
 		if ctx.Err() != nil {
+			h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 			return ctx.Err()
 		}
 		switch evt.Type {
@@ -1121,6 +1132,8 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 			if _, err := h.sessionForRun(ctx, client.SessionID, runID); err != nil {
 				if ctx.Err() == nil {
 					h.sendSessionHistoryError(client, runID, parentID, err)
+				} else {
+					h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 				}
 				return err
 			}
@@ -1140,11 +1153,12 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 			})
 			endMsg.ParentID = parentID
 			h.emit(client, client.SessionID, runID, endMsg)
-			sendIdle()
+			h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "completed"))
 			return nil
 
 		case agent.ChatEventError:
 			if ctx.Err() != nil {
+				h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "cancelled"))
 				return ctx.Err()
 			}
 			streamErr := evt.Err
@@ -1414,7 +1428,9 @@ func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 		cancel()
 	}
 	for _, run := range queued {
-		_ = h.store.UpdateRun(sessionID, run.id, func(record *persistedRun) { record.State = "cancelled" })
+		if err := h.store.UpdateRun(sessionID, run.id, func(record *persistedRun) { record.State = "cancelled" }); err != nil {
+			h.failPersistence(run.client, sessionID, run.id, run.parentID, err)
+		}
 	}
 	cancelled = append(cancelled, queued...)
 	return cancelled
@@ -1496,6 +1512,107 @@ func (h *AgentHandler) sendSessionHistoryError(client *Client, runID, parentID s
 	msg, _ := NewMessage(TypeError, client.SessionID, ErrorData{Code: code, Message: "load session history failed: " + err.Error()})
 	msg.ParentID = parentID
 	h.emit(client, client.SessionID, runID, msg)
+	h.emit(client, client.SessionID, runID, terminalStatus(client.SessionID, parentID, runID, "error"))
+}
+
+// SessionActivity returns unfinished chat runs for a session. Completed history
+// is omitted. A store error is returned instead of an empty working set.
+func (h *AgentHandler) activeRuns(sessionID string) ([]persistedRun, error) {
+	if _, _, err := h.store.GetRun(sessionID, "activity-probe"); err != nil {
+		return nil, err
+	}
+	return h.store.ActiveRuns(sessionID), nil
+}
+
+func (h *AgentHandler) SessionActivity(sessionID string) ([]SessionActivity, error) {
+	if h == nil || h.store == nil {
+		return nil, nil
+	}
+	runs, err := h.activeRuns(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	activity := make([]SessionActivity, 0, len(runs))
+	for _, run := range runs {
+		activity = append(activity, SessionActivity{
+			RunID:     run.ID,
+			State:     runActivityState(run.State),
+			UpdatedAt: run.UpdatedAt.UTC(),
+		})
+	}
+	return activity, nil
+}
+
+// SessionActivity is one unfinished chat run. State is only queued or running.
+type SessionActivity struct {
+	RunID     string    `json:"run_id"`
+	State     string    `json:"state"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func runActivityState(state string) string {
+	if state == "running" {
+		return "running"
+	}
+	return "queued"
+}
+
+func runActivityMessage(state string) string {
+	if state == "running" {
+		return "agent is running"
+	}
+	return "message queued"
+}
+
+func terminalStatus(sessionID, parentID, runID, state string) *Message {
+	message := "completed"
+	switch state {
+	case "cancelled":
+		message = "cancelled"
+	case "error":
+		message = "run failed"
+	}
+	status, _ := NewMessage(TypeStatus, sessionID, StatusData{State: state, Message: message})
+	status.ParentID = parentID
+	status.RunID = runID
+	return status
+}
+
+// replayed marks an outbound copy. The stored event stays unmarked so a later
+// reconnect does not persist the replay flag back into the journal.
+func replayed(event *Message) *Message {
+	if event == nil || event.Type != TypeStatus {
+		return event
+	}
+	return withReplay(event)
+}
+
+func withReplay(event *Message) *Message {
+	if event == nil {
+		return nil
+	}
+	copyMsg := *event
+	var payload map[string]any
+	if len(event.Data) > 0 && json.Unmarshal(event.Data, &payload) != nil {
+		return event
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["replay"] = true
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return event
+	}
+	copyMsg.Data = raw
+	return &copyMsg
+}
+
+func replayMarked(event *Message) bool {
+	var payload struct {
+		Replay bool `json:"replay"`
+	}
+	return event != nil && event.ParseData(&payload) == nil && payload.Replay
 }
 
 func reasoningDataForEvent(content string) (ReasoningData, bool) {

@@ -68,7 +68,7 @@ func (h *AgentHandler) replayAcceptedRun(client *Client, run persistedRun) {
 		if event.RunID != run.ID {
 			continue
 		}
-		if err := client.SendReliable(ctx, event); err != nil {
+		if err := client.SendReliable(ctx, replayed(event)); err != nil {
 			client.Close()
 			return
 		}
@@ -91,6 +91,7 @@ func (h *AgentHandler) replayAcceptedRun(client *Client, run persistedRun) {
 		return
 	}
 	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: run.State, Message: "request already accepted"})
+	status = withReplay(status)
 	status.ID, status.EventID, status.RunID, status.ParentID = "", "", run.ID, run.ParentID
 	if err := client.SendReliable(ctx, status); err != nil {
 		client.Close()
