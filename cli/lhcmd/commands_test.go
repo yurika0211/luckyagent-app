@@ -14,6 +14,7 @@ import (
 
 	"github.com/yurika0211/luckyagent-runtime/config"
 	"github.com/yurika0211/luckyagent-runtime/gateway/weixin"
+	"github.com/yurika0211/luckyagent-runtime/servelock"
 )
 
 func captureStdout(t *testing.T, fn func() error) (string, error) {
@@ -646,5 +647,46 @@ func TestRunInitCreatesConfigWhenMissing(t *testing.T) {
 	cfgPath := filepath.Join(home, ".luckyagent", "config"+".json")
 	if _, err := os.Stat(cfgPath); err != nil {
 		t.Fatalf("expected config file after init: %v", err)
+	}
+}
+
+func TestRunServeFailsClosedWhenHomeLocked(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := runInit(&cobra.Command{}, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	held, err := servelock.Acquire(filepath.Join(home, ".luckyagent"))
+	if err != nil {
+		t.Fatalf("hold lock: %v", err)
+	}
+	defer servelock.Release(held)
+	err = runServe(&cobra.Command{}, nil)
+	if err == nil {
+		t.Fatal("runServe should fail while another process holds serve.lock")
+	}
+	if !strings.Contains(err.Error(), "already holds") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunDiagMemoryPrintsHeap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := runInit(&cobra.Command{}, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	out, err := captureStdout(t, func() error {
+		return runDiagMemory(&cobra.Command{}, nil)
+	})
+	if err != nil {
+		t.Fatalf("runDiagMemory: %v", err)
+	}
+	for _, want := range []string{"heap_alloc", "autonomy.pool.max_workers", "serve.lock"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %s", want, out)
+		}
 	}
 }

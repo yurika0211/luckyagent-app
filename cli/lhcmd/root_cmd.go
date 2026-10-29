@@ -187,7 +187,14 @@ func newRootCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		RunE:    runDiagTimeout,
 	}
-	diagCmd.AddCommand(diagTimeoutCmd)
+	diagMemoryCmd := &cobra.Command{
+		Use:     "memory",
+		Aliases: []string{"mem", "rss"},
+		Short:   "查看进程 RSS/heap 与并发上限",
+		Args:    cobra.NoArgs,
+		RunE:    runDiagMemory,
+	}
+	diagCmd.AddCommand(diagTimeoutCmd, diagMemoryCmd)
 
 	soulCmd := &cobra.Command{
 		Use:   "soul",

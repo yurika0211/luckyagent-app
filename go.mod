@@ -12,7 +12,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261027090920-b78358e5ed9b
 	github.com/yurika0211/luckyagent-plugins v0.1.0
-	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261027090016-f09a23c7f36f
+	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261028184909-247d91fb416a
 	golang.org/x/term v0.41.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11

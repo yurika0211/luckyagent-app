@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -30,6 +31,7 @@ import (
 	"github.com/yurika0211/luckyagent-runtime/gateway/weixin"
 	"github.com/yurika0211/luckyagent-runtime/memoryaestus"
 	"github.com/yurika0211/luckyagent-runtime/proactive"
+	"github.com/yurika0211/luckyagent-runtime/servelock"
 	"github.com/yurika0211/luckyagent-runtime/soul"
 	"github.com/yurika0211/luckyagent-runtime/tool"
 	"github.com/yurika0211/luckyagent-tools/cron"
@@ -576,6 +578,37 @@ func runConfigTimeout(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Autonomy Worker:              %ds (%s)  [autonomy.worker.timeout_seconds]\n", cfg.Autonomy.Worker.TimeoutSeconds, formatTimeoutDuration(cfg.Autonomy.Worker.TimeoutSeconds))
 	fmt.Printf("  Hooks:                        %ds (%s)  [hooks.timeout_seconds]\n", cfg.Hooks.TimeoutSeconds, formatTimeoutDuration(cfg.Hooks.TimeoutSeconds))
 	fmt.Printf("  Limits (max):                 %ds (%s)  [limits.max_timeout_seconds]\n", cfg.Limits.MaxTimeoutSeconds, formatTimeoutDuration(cfg.Limits.MaxTimeoutSeconds))
+	return nil
+}
+
+func runDiagMemory(cmd *cobra.Command, args []string) error {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	fmt.Println("LuckyAgent 进程内存:")
+	fmt.Printf("  goroutines:     %d\n", runtime.NumGoroutine())
+	fmt.Printf("  heap_alloc:     %d MiB\n", ms.HeapAlloc/1024/1024)
+	fmt.Printf("  heap_sys:       %d MiB\n", ms.HeapSys/1024/1024)
+	fmt.Printf("  heap_inuse:     %d MiB\n", ms.HeapInuse/1024/1024)
+	fmt.Printf("  sys:            %d MiB\n", ms.Sys/1024/1024)
+	fmt.Printf("  gc_cycles:      %d\n", ms.NumGC)
+	fmt.Printf("  gomemlimit:     %s\n", strings.TrimSpace(os.Getenv("GOMEMLIMIT")))
+
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	fmt.Println("配置上限:")
+	fmt.Printf("  autonomy.pool.min_workers: %d\n", cfg.Autonomy.Pool.MinWorkers)
+	fmt.Printf("  autonomy.pool.max_workers: %d\n", cfg.Autonomy.Pool.MaxWorkers)
+	fmt.Printf("  delegate.max_concurrent:   %d\n", cfg.Delegate.MaxConcurrent)
+	fmt.Printf("  delegate.max_children:     %d\n", cfg.Delegate.MaxChildren)
+	fmt.Printf("  context.session_max_bytes: %d\n", cfg.Context.SessionMaxBytes)
+	fmt.Printf("  server.addr:               %s\n", cfg.Server.Addr)
+	fmt.Printf("  serve.lock:                %s\n", servelock.Path(mgr.HomeDir()))
 	return nil
 }
 
@@ -1140,7 +1173,20 @@ func isWeixinLoginFailureStatus(status string) bool {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	a, err := getAgent()
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	lock, err := servelock.Acquire(mgr.HomeDir())
+	if err != nil {
+		return err
+	}
+	defer servelock.Release(lock)
+
+	a, err := appboot.New(mgr)
 	if err != nil {
 		return err
 	}
