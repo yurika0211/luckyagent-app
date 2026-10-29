@@ -1086,6 +1086,18 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 			msg.ParentID = parentID
 			h.emit(client, client.SessionID, runID, msg)
 
+		case agent.ChatEventUIDelta:
+			if evt.UI == nil || len(evt.UI.Nodes) == 0 {
+				continue
+			}
+			nodes := make([]UINodeData, 0, len(evt.UI.Nodes))
+			for _, node := range evt.UI.Nodes {
+				nodes = append(nodes, UINodeData{ID: node.ID, Type: node.Type, Policy: node.Policy, Props: node.Props, Children: node.Children})
+			}
+			msg, _ := NewMessage(TypeUIDelta, client.SessionID, UIDeltaData{TreeID: evt.UI.TreeID, State: evt.UI.State, Nodes: nodes, Patch: evt.UI.Patch})
+			msg.ParentID = parentID
+			h.emit(client, client.SessionID, runID, msg)
+
 		case agent.ChatEventContent:
 			fullResponse.WriteString(evt.Content)
 			msg, _ := NewMessage(TypeStreamChunk, client.SessionID, StreamChunkData{
