@@ -173,10 +173,18 @@ func (s *Server) artifactRoots() []artifactRoot {
 	if home == "" {
 		return nil
 	}
-	return []artifactRoot{
+	roots := []artifactRoot{
 		{prefix: "workspace", path: filepath.Join(home, "workspace")},
 		{prefix: "uploads", path: filepath.Join(home, "uploads")},
 	}
+	// Generated files are often left in the service's checkout (for example
+	// an APK under build/outputs). Keep that directory explicit and bounded;
+	// accepting arbitrary absolute paths here would turn the artifact endpoint
+	// into a file browser.
+	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+		roots = append(roots, artifactRoot{prefix: "cwd", path: cwd})
+	}
+	return roots
 }
 
 func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +217,17 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) resolveArtifactPath(relative string) (artifactRoot, string, error) {
+	if filepath.IsAbs(filepath.FromSlash(relative)) || strings.HasPrefix(relative, "~/") {
+		absolute := filepath.FromSlash(relative)
+		if strings.HasPrefix(relative, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return artifactRoot{}, "", err
+			}
+			absolute = filepath.Join(home, strings.TrimPrefix(relative, "~/"))
+		}
+		return s.resolveAbsoluteArtifactPath(absolute)
+	}
 	relative = filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
 	for _, root := range s.artifactRoots() {
 		prefix := root.prefix + "/"
@@ -223,28 +242,53 @@ func (s *Server) resolveArtifactPath(relative string) (artifactRoot, string, err
 		if err != nil {
 			return artifactRoot{}, "", err
 		}
-		target, err := filepath.Abs(filepath.Join(rootPath, filepath.FromSlash(child)))
-		if err != nil {
-			return artifactRoot{}, "", err
-		}
-		if target != rootPath && !strings.HasPrefix(target, rootPath+string(filepath.Separator)) {
-			return artifactRoot{}, "", fmt.Errorf("path escapes artifact root")
-		}
-		realRoot, err := filepath.EvalSymlinks(rootPath)
-		if err != nil {
-			return artifactRoot{}, "", err
-		}
-		realTarget, err := filepath.EvalSymlinks(target)
-		if err != nil {
-			return artifactRoot{}, "", err
-		}
-		rel, err := filepath.Rel(realRoot, realTarget)
-		if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return artifactRoot{}, "", fmt.Errorf("path escapes artifact root through symlink")
-		}
-		return root, target, nil
+		return resolveArtifactWithinRoot(root, rootPath, filepath.Join(rootPath, filepath.FromSlash(child)))
 	}
 	return artifactRoot{}, "", fmt.Errorf("unsupported artifact root")
+}
+
+func (s *Server) resolveAbsoluteArtifactPath(path string) (artifactRoot, string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return artifactRoot{}, "", err
+	}
+	for _, root := range s.artifactRoots() {
+		rootPath, err := filepath.Abs(root.path)
+		if err != nil {
+			continue
+		}
+		if rootPath == abs || strings.HasPrefix(abs, rootPath+string(filepath.Separator)) {
+			return resolveArtifactWithinRoot(root, rootPath, abs)
+		}
+	}
+	return artifactRoot{}, "", fmt.Errorf("unsupported artifact root")
+}
+
+func resolveArtifactWithinRoot(root artifactRoot, rootPath, target string) (artifactRoot, string, error) {
+	rootPath, err := filepath.Abs(rootPath)
+	if err != nil {
+		return artifactRoot{}, "", err
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		return artifactRoot{}, "", err
+	}
+	if target != rootPath && !strings.HasPrefix(target, rootPath+string(filepath.Separator)) {
+		return artifactRoot{}, "", fmt.Errorf("path escapes artifact root")
+	}
+	realRoot, err := filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		return artifactRoot{}, "", err
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return artifactRoot{}, "", err
+	}
+	rel, err := filepath.Rel(realRoot, realTarget)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return artifactRoot{}, "", fmt.Errorf("path escapes artifact root through symlink")
+	}
+	return root, target, nil
 }
 
 func (s *Server) artifactURLForPath(path string) string {

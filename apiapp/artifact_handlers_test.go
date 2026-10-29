@@ -3,8 +3,10 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yurika0211/luckyagent-runtime/provider"
@@ -109,5 +111,44 @@ func TestHistoryMessagesIncludeMediaDirective(t *testing.T) {
 	}
 	if messages[0].Content != "图片已生成" {
 		t.Fatalf("history content = %q, want media directive removed", messages[0].Content)
+	}
+}
+
+func TestArtifactHandlerServesServiceWorkingDirectoryFiles(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	workDir, err := os.MkdirTemp(".", ".artifact-cwd-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workDir) })
+	path := filepath.Join(workDir, "luckyagent-debug.apk")
+	if err := os.WriteFile(path, []byte("apk-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The server emits a stable cwd namespace for attachments generated from
+	// its working tree.
+	requestURL := s.artifactURLForPath(path)
+	if requestURL == "" || !strings.Contains(requestURL, "path=cwd%2F") {
+		t.Fatalf("working-directory artifact URL = %q", requestURL)
+	}
+	recorder := httptest.NewRecorder()
+	s.handleArtifact(recorder, httptest.NewRequest(http.MethodGet, requestURL, nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "apk-data" {
+		t.Fatalf("working-directory artifact response = %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	// A MEDIA directive contains an absolute path. Accept it only after the
+	// same root check, so clients can derive the URL without knowing cwd.
+	absolute := httptest.NewRecorder()
+	s.handleArtifact(absolute, httptest.NewRequest(http.MethodGet,
+		"/api/v1/artifacts?path="+url.QueryEscape(absolutePath), nil))
+	if absolute.Code != http.StatusOK || absolute.Body.String() != "apk-data" {
+		t.Fatalf("absolute artifact response = %d %q", absolute.Code, absolute.Body.String())
 	}
 }
