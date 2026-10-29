@@ -33,6 +33,9 @@ type StreamEndData = transport.StreamEndData
 type TaskEventData = transport.TaskEventData
 type ToolCallData = transport.ToolCallData
 type ToolResultData = transport.ToolResultData
+type UIActionData = transport.UIActionData
+type UIDeltaData = transport.UIDeltaData
+type UINodeData = transport.UINodeData
 
 const TypeApproval = transport.TypeApproval
 const TypeApprovalResponse = transport.TypeApprovalResponse
@@ -52,5 +55,7 @@ const TypeStreamEnd = transport.TypeStreamEnd
 const TypeTaskEvent = transport.TypeTaskEvent
 const TypeToolCall = transport.TypeToolCall
 const TypeToolResult = transport.TypeToolResult
+const TypeUIAction = transport.TypeUIAction
+const TypeUIDelta = transport.TypeUIDelta
 
 var generateID = transport.NewID
