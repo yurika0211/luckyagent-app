@@ -75,7 +75,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	github.com/yurika0211/luckyagent-api v0.2.5-0.20261029173750-96a97c0c2623
+	github.com/yurika0211/luckyagent-api v0.2.5-0.20261029222552-bc07ab3b8b7e
 	github.com/yurika0211/luckyagent-gateway v0.2.2
 	github.com/yurika0211/luckyagent-tools v0.2.4-0.20261025155312-14ca32a46742
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
