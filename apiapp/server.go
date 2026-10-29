@@ -1326,6 +1326,29 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	s.sendJSON(w, http.StatusOK, payload)
 }
 
+func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+	var runs []websocket.SessionActivity
+	if s.wsHandler != nil {
+		var err error
+		runs, err = s.wsHandler.SessionActivity(sessionID)
+		if err != nil {
+			s.sendError(w, "load session activity failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if runs == nil {
+		runs = []websocket.SessionActivity{}
+	}
+	s.sendJSON(w, http.StatusOK, map[string]any{
+		"session_id": sessionID,
+		"runs":       runs,
+	})
+}
+
 func (s *Server) patchSession(w http.ResponseWriter, r *http.Request, sess *session.Session) {
 	var body struct {
 		Title   *string `json:"title"`
@@ -1374,6 +1397,10 @@ func sessionStorageStatus(err error) int {
 }
 
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request, sess *session.Session, parts []string) {
+	if len(parts) == 1 && parts[0] == "activity" {
+		s.handleSessionActivity(w, r, sess.ID)
+		return
+	}
 	if len(parts) == 1 && parts[0] == "tools" {
 		s.handleSessionToolTrace(w, r, sess)
 		return

@@ -73,6 +73,12 @@ func TestStartupDoesNotExecuteRecoveryMetadataWithDamagedHistory(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("missing persistence failure notification for %s", run.ID)
 		}
+		select {
+		case msg := <-notifications:
+			assertTerminalStatus(t, msg, run.ID, "error")
+		case <-time.After(time.Second):
+			t.Fatalf("missing terminal status for %s", run.ID)
+		}
 	}
 	if len(notifications) != 0 {
 		t.Fatal("recovery emitted extra output after persistence failure")
@@ -110,6 +116,7 @@ func TestQueuedEventPersistenceFailureSkipsRunAndContinuesQueue(t *testing.T) {
 	h.emit(client, client.SessionID, failed.id, queued)
 	restore()
 	assertPersistenceFailure(t, <-client.Send, failed.id)
+	assertTerminalStatus(t, <-client.Send, failed.id, "error")
 	h.startNext(client.SessionID)
 	if !h.WaitSession(client.SessionID, 2*time.Second) {
 		t.Fatal("queue stopped after its first persistence failure")
@@ -191,6 +198,9 @@ func TestEventPersistenceFailureStopsExecutionWithoutSuccessfulEnd(t *testing.T)
 					assertPersistenceFailure(t, msg, "request")
 					failures++
 				}
+				if msg.Type == TypeStatus && msg.RunID == "request" && msg.ID == "" {
+					assertTerminalStatus(t, msg, "request", "error")
+				}
 				if msg.Type == TypeStatus {
 					var data StatusData
 					_ = msg.ParseData(&data)
@@ -248,5 +258,16 @@ func assertPersistenceFailure(t *testing.T, msg *Message, runID string) {
 	}
 	if msg.EventID != "" || msg.ID != "" {
 		t.Fatal("unpersisted notification exposed a replay cursor")
+	}
+}
+
+func assertTerminalStatus(t *testing.T, msg *Message, runID, state string) {
+	t.Helper()
+	var data StatusData
+	if msg == nil || msg.Type != TypeStatus || msg.RunID != runID || msg.ParseData(&data) != nil || data.State != state {
+		t.Fatalf("terminal status = %#v, want %s", msg, state)
+	}
+	if msg.EventID != "" || msg.ID != "" {
+		t.Fatal("terminal status sent after a store failure exposed a replay cursor")
 	}
 }

@@ -30,6 +30,7 @@ var ParseMessage = app.ParseMessage
 type ReasoningData = app.ReasoningData
 type ReconnectData = app.ReconnectData
 type ReconnectHandler = app.ReconnectHandler
+type SessionActivity = app.SessionActivity
 type StatusData = app.StatusData
 type StreamChunkData = app.StreamChunkData
 type StreamEndData = app.StreamEndData
