@@ -77,6 +77,7 @@ type AgentHandler struct {
 	store     *runStore
 	eventSink func(string, *Message)
 	lucky     *luckycollector.Lucky
+	uiTrees   map[string]map[string]uiTreeEntry
 	started   bool
 	replays   map[*Client]*clientReplayLock
 	mu        sync.Mutex
@@ -95,6 +96,7 @@ func NewAgentHandler(a agentRuntime) *AgentHandler {
 		runners: make(map[string]*sessionRunner),
 		store:   newRunStore(storeRoot),
 		lucky:   luckycollector.NewLucky(),
+		uiTrees: make(map[string]map[string]uiTreeEntry),
 	}
 }
 
@@ -159,6 +161,8 @@ func (h *AgentHandler) HandleMessage(client *Client, msg *Message) {
 		h.handleCancel(client, msg)
 	case TypeApprovalResponse:
 		h.handleApprovalResponse(client, msg)
+	case TypeUIAction:
+		h.handleUIAction(client, msg)
 	case TypeReconnect:
 		h.HandleReconnect(client, msg)
 	case TypeStreamAck:
@@ -1090,6 +1094,7 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 			if evt.UI == nil || len(evt.UI.Nodes) == 0 {
 				continue
 			}
+			h.recordUIDelta(client.SessionID, *evt.UI)
 			nodes := make([]UINodeData, 0, len(evt.UI.Nodes))
 			for _, node := range evt.UI.Nodes {
 				nodes = append(nodes, UINodeData{ID: node.ID, Type: node.Type, Policy: node.Policy, Props: node.Props, Children: node.Children})

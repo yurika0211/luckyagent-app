@@ -65,6 +65,17 @@ event without an error cause fail the run. Retrying does not regress a replayed
 completed result to an old running status. This request deduplication does not
 promise transactional execution of arbitrary external tools after a crash.
 
+### OpenUI actions
+
+`ui_delta` trees are retained in memory per session while they contain a
+catalog-approved `Actions` node. A `ui_action` must name the connected session,
+an existing tree, and one of that tree's action items. Streaming, unknown, or
+already-consumed trees are rejected with `UI_ACTION_REJECTED`; a process restart
+expires outstanding controls. A valid action is consumed once and queued as a
+normal streaming Agent turn with its selected label and structured values. The
+handler does not execute a tool from the widget payload: read/write routing and
+the existing approval policy remain in the Agent loop.
+
 ## gRPC library
 
 `lh serve` does not start a gRPC listener. Embedders can use `NewGRPCServer`,
