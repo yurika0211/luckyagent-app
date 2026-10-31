@@ -1086,6 +1086,7 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 				StepID:      step.StepID,
 				Visibility:  step.Visibility,
 				Attachments: attachments,
+				DurationMS:  evt.Duration.Milliseconds(),
 			})
 			msg.ParentID = parentID
 			h.emit(client, client.SessionID, runID, msg)

@@ -52,3 +52,15 @@ func TestMapEventCarriesApprovalObservationAndUsage(t *testing.T) {
 		t.Fatalf("createdAt=%v want %v", ev.CreatedAt, now)
 	}
 }
+
+func TestMapEventCarriesToolDuration(t *testing.T) {
+	ev := mapEvent(agent.ChatEvent{
+		Type:     agent.ChatEventToolResult,
+		Name:     "terminal",
+		Result:   "command timed out",
+		Duration: 30 * time.Second,
+	})
+	if ev.Type != EventToolResult || ev.Duration != 30*time.Second {
+		t.Fatalf("event=%+v", ev)
+	}
+}
