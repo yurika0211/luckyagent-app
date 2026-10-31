@@ -1290,13 +1290,20 @@ func (h *AgentHandler) attachmentForLocalPath(path string, fallbackType gateway.
 	if err != nil {
 		return gateway.Attachment{}, false
 	}
-	for _, root := range []struct {
+	roots := []struct {
 		prefix string
 		path   string
 	}{
 		{prefix: "workspace", path: filepath.Join(home, "workspace")},
 		{prefix: "uploads", path: filepath.Join(home, "uploads")},
-	} {
+	}
+	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+		roots = append(roots, struct {
+			prefix string
+			path   string
+		}{prefix: "cwd", path: cwd})
+	}
+	for _, root := range roots {
 		rootPath, err := filepath.Abs(root.path)
 		if err != nil {
 			continue
