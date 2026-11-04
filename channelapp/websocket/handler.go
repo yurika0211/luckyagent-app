@@ -1193,6 +1193,7 @@ type toolAttachmentPayload struct {
 	Path        string               `json:"path"`
 	OutputPath  string               `json:"output_path"`
 	FilePath    string               `json:"file_path"`
+	FileName    string               `json:"file_name"`
 	URL         string               `json:"url"`
 	FileURL     string               `json:"file_url"`
 	DownloadURL string               `json:"download_url"`
@@ -1232,6 +1233,13 @@ func (h *AgentHandler) attachmentsFromToolResult(toolName, raw string) []gateway
 	}
 	for _, path := range []string{payload.Path, payload.OutputPath, payload.FilePath} {
 		if attachment, ok := h.attachmentForLocalPath(path, fallbackType); ok {
+			// file_send stores under a random name and reports the name the user
+			// should see in file_name. The on-disk name stays the download path.
+			if path == payload.FilePath {
+				if name := displayFileName(payload.FileName); name != "" {
+					attachment.FileName = name
+				}
+			}
 			attachments = appendUniqueAttachments(attachments, attachment)
 		}
 	}
@@ -1271,6 +1279,20 @@ func (h *AgentHandler) attachmentsFromResponse(raw string) (string, []gateway.At
 		resolved = append(resolved, reference)
 	}
 	return agent.StripMediaReferences(raw, resolved), attachments
+}
+
+// displayFileName keeps only the last path segment of a tool-supplied name, so a
+// value like "../secret" cannot change which file is served.
+func displayFileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" || name == "." || name == ".." || name == string(filepath.Separator) {
+		return ""
+	}
+	return name
 }
 
 func (h *AgentHandler) attachmentForLocalPath(path string, fallbackType gateway.AttachmentType) (gateway.Attachment, bool) {
