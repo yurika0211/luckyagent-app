@@ -2492,17 +2492,17 @@ func (h *Handler) handleTurnChatEventStream(chatCtx context.Context, msg *gatewa
 			case turn.ChatEventApprovalRequired:
 				h.sendProgress(context.Background(), msg, formatQQApprovalPrompt(evt))
 			case turn.ChatEventToolCall:
-				// NapCat sends a short result line when tool details are on.
-				// The call line would include args, so it stays off.
-				if h.finalAnswerOnly || (quiet && !h.showToolDetails) {
+				if h.finalAnswerOnly {
 					continue
 				}
 				if quiet {
+					// NapCat never emits the args-bearing call line.
 					continue
 				}
 				if trace != nil {
-					trace.AddToolCall(evt.Name, "")
+					trace.AddToolCall(evt.Name, evt.Args)
 				}
+				h.sendProgress(context.Background(), msg, qqToolCallMessage(evt.Name, evt.Args))
 			case turn.ChatEventToolResult:
 				result := qqToolResultText(evt)
 				if h.progressSummary && strings.TrimSpace(evt.Name) != "" {

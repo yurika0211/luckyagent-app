@@ -177,6 +177,33 @@ func TestNapCatSummaryNilRuntimeDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestQQOfficialToolCallProgressRestored(t *testing.T) {
+	sender := &qqHandlerTestSender{}
+	handler := NewHandlerWithOptions(sender, nil, HandlerOptions{PlatformName: "qqofficial"})
+	if handler.finalAnswerOnly || handler.napcatQuiet() {
+		t.Fatalf("qqofficial final=%v quiet=%v", handler.finalAnswerOnly, handler.napcatQuiet())
+	}
+	args := `{"query":"public-topic"}`
+	ctx, cancel, msg, events := napcatProgressEvents(
+		agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: args},
+		agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "web_search", Result: "ok"},
+		agent.ChatEvent{Type: agent.ChatEventDone, Content: "最终答案"},
+	)
+	defer cancel()
+	if err := handler.handleChatEventStream(ctx, msg, events); err != nil {
+		t.Fatalf("handleChatEventStream() error = %v", err)
+	}
+	messages := sender.Messages()
+	joined := strings.Join(messages, "\n")
+	wantCall := qqToolCallMessage("web_search", args)
+	if !strings.Contains(joined, wantCall) || !strings.Contains(joined, "web_search") {
+		t.Fatalf("expected qqofficial tool-call progress %q, got %#v", wantCall, messages)
+	}
+	if !strings.Contains(joined, "最终答案") {
+		t.Fatalf("expected final answer, got %#v", messages)
+	}
+}
+
 func TestFeishuHandlerOptionsKeepFinalAnswerOnly(t *testing.T) {
 	handler := NewHandlerWithOptions(&qqHandlerTestSender{}, nil, HandlerOptions{
 		PlatformName:    "feishu",
