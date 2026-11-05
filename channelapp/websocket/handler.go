@@ -109,6 +109,11 @@ func (h *AgentHandler) SetEventSink(sink func(string, *Message)) {
 	h.mu.Unlock()
 }
 
+// staleRunTTL is how long a queued or running websocket checkpoint may sit
+// before a process restart refuses to resume it. Discovery still lists it;
+// Start marks it interrupted so the next boot does not pick it up.
+const staleRunTTL = 30 * time.Minute
+
 // Start restores queued and interrupted runs after the runtime process starts.
 func (h *AgentHandler) Start() {
 	h.mu.Lock()
@@ -119,7 +124,12 @@ func (h *AgentHandler) Start() {
 	h.started = true
 	h.mu.Unlock()
 
+	now := time.Now()
 	for _, persisted := range h.store.Restoreable() {
+		if runIsStale(persisted, now, staleRunTTL) {
+			h.expireStaleRun(persisted, now)
+			continue
+		}
 		data := ChatData{
 			Message:     persisted.Message,
 			Stream:      persisted.Stream,
@@ -147,6 +157,30 @@ func (h *AgentHandler) Start() {
 	}
 	for sessionID := range h.runners {
 		h.startNext(sessionID)
+	}
+}
+
+func runIsStale(run persistedRun, now time.Time, ttl time.Duration) bool {
+	stamp := run.UpdatedAt
+	if stamp.IsZero() {
+		stamp = run.CreatedAt
+	}
+	if stamp.IsZero() {
+		return true
+	}
+	return now.Sub(stamp) > ttl
+}
+
+func (h *AgentHandler) expireStaleRun(run persistedRun, now time.Time) {
+	age := now.Sub(run.UpdatedAt)
+	if run.UpdatedAt.IsZero() {
+		age = now.Sub(run.CreatedAt)
+	}
+	logger.Warn("expire stale websocket run", "session_id", run.SessionID, "run_id", run.ID, "state", run.State, "age", age.String())
+	if err := h.store.UpdateRun(run.SessionID, run.ID, func(record *persistedRun) {
+		record.State = "interrupted"
+	}); err != nil {
+		logger.Warn("persist stale websocket run failed", "session_id", run.SessionID, "run_id", run.ID, "error", err)
 	}
 }
 
