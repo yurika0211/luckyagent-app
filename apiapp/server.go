@@ -617,7 +617,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(s.metrics.ExportPrometheus()))
+	w.Write([]byte(appendProcessMemoryMetrics(s.metrics.ExportPrometheus())))
 }
 
 // handleChat 流式聊天 (SSE)
