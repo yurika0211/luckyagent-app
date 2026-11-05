@@ -181,10 +181,35 @@ func (s *Server) artifactRoots() []artifactRoot {
 	// an APK under build/outputs). Keep that directory explicit and bounded;
 	// accepting arbitrary absolute paths here would turn the artifact endpoint
 	// into a file browser.
-	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+	if cwd, err := os.Getwd(); err == nil && safeCwdArtifactRoot(cwd) {
 		roots = append(roots, artifactRoot{prefix: "cwd", path: cwd})
 	}
 	return roots
+}
+
+// safeCwdArtifactRoot refuses a working directory that would expose the whole
+// filesystem or the user's home tree as downloadable artifacts.
+func safeCwdArtifactRoot(cwd string) bool {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return false
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return false
+	}
+	if abs == string(filepath.Separator) {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return true
+	}
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return true
+	}
+	return abs != home
 }
 
 func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
