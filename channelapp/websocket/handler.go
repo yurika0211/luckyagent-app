@@ -1313,19 +1313,29 @@ func (h *AgentHandler) attachmentForLocalPath(path string, fallbackType gateway.
 	if err != nil {
 		return gateway.Attachment{}, false
 	}
-	for _, root := range []struct {
+	roots := []struct {
 		prefix string
 		path   string
 	}{
 		{prefix: "workspace", path: filepath.Join(home, "workspace")},
 		{prefix: "uploads", path: filepath.Join(home, "uploads")},
-	} {
+	}
+	if cwd, err := os.Getwd(); err == nil && safeCwdArtifactRoot(cwd) {
+		roots = append(roots, struct {
+			prefix string
+			path   string
+		}{prefix: "cwd", path: cwd})
+	}
+	for _, root := range roots {
 		rootPath, err := filepath.Abs(root.path)
 		if err != nil {
 			continue
 		}
 		rel, err := filepath.Rel(rootPath, absPath)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if !localPathStaysInRoot(rootPath, absPath) {
 			continue
 		}
 		info, err := os.Stat(absPath)
@@ -1344,6 +1354,47 @@ func (h *AgentHandler) attachmentForLocalPath(path string, fallbackType gateway.
 		}, true
 	}
 	return gateway.Attachment{}, false
+}
+
+func localPathStaysInRoot(rootPath, target string) bool {
+	realRoot, err := filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		return false
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(realRoot, realTarget)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// safeCwdArtifactRoot refuses a working directory that would expose the whole
+// filesystem or the user's home tree as downloadable artifacts.
+func safeCwdArtifactRoot(cwd string) bool {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return false
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return false
+	}
+	if abs == string(filepath.Separator) {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return true
+	}
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return true
+	}
+	return abs != home
 }
 
 func remoteAttachment(rawURL string, fallbackType gateway.AttachmentType) (gateway.Attachment, bool) {

@@ -3,6 +3,7 @@ package websocket
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yurika0211/luckyagent-runtime/config"
@@ -48,6 +49,60 @@ func TestFileSendDisplayNameOverridesStoredName(t *testing.T) {
 	}
 	if got[0].Type != gateway.AttachmentDocument {
 		t.Fatalf("type: %s", got[0].Type)
+	}
+}
+
+func TestAttachmentForLocalPathRejectsSymlinkOutsideCwd(t *testing.T) {
+	home := t.TempDir()
+	mgr, err := config.NewManagerWithDir(filepath.Join(home, ".luckyagent"))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	link := filepath.Join(work, "escape.txt")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	h := NewAgentHandler(&configAgentRuntime{cfg: mgr})
+	if _, ok := h.attachmentForLocalPath(link, gateway.AttachmentDocument); ok {
+		t.Fatal("symlink outside cwd became an attachment card")
+	}
+	raw := "MEDIA:" + link
+	_, attachments := h.attachmentsFromResponse(raw)
+	for _, attachment := range attachments {
+		if strings.Contains(attachment.FileURL, "cwd") {
+			t.Fatalf("emitted cwd card for outside symlink: %+v", attachment)
+		}
+	}
+}
+
+func TestSafeCwdArtifactRootRejectsFilesystemAndHome(t *testing.T) {
+	if safeCwdArtifactRoot("/") {
+		t.Fatal("filesystem root accepted")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if safeCwdArtifactRoot(home) {
+		t.Fatal("user home accepted")
+	}
+	if !safeCwdArtifactRoot(t.TempDir()) {
+		t.Fatal("ordinary temp directory rejected")
 	}
 }
 
