@@ -463,15 +463,29 @@ func (s *Server) Start() error {
 	}()
 
 	displayAddr := publicServerURL(boundAddr)
+	if warning := serveMemoryCapWarning(os.Getenv("GOMEMLIMIT")); warning != "" {
+		logger.Warn(warning)
+	}
 	logger.Info("api server started",
 		"addr", boundAddr,
 		"cors_enabled", s.config.EnableCORS,
 		"api_keys", len(s.config.APIKeys),
 		"rate_limit", s.config.RateLimit,
+		"gomemlimit", strings.TrimSpace(os.Getenv("GOMEMLIMIT")),
 	)
 	fmt.Printf("🚀 LuckyAgent API Server running at %s\n", displayAddr)
 	fmt.Printf("   API: /api/v1/chat | /api/v1/health/live | /api/v1/stats\n")
 	return nil
+}
+
+// serveMemoryCapWarning reports a missing process memory cap. An empty string
+// means GOMEMLIMIT is set and serve should stay quiet. The process is never
+// refused and the limit is never written here.
+func serveMemoryCapWarning(gomemlimit string) string {
+	if strings.TrimSpace(gomemlimit) != "" {
+		return ""
+	}
+	return "serve has no GOMEMLIMIT; a leak can OOM the host. systemd unit packaging/unix/luckyagent.service sets MemoryMax=2G and GOMEMLIMIT=1536MiB"
 }
 
 // Stop 停止 API Server
