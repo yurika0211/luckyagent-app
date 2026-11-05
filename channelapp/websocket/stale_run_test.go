@@ -119,4 +119,9 @@ func TestStartRestoresFreshRunningRun(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("fresh running run was not resumed")
 	}
+	// startNext keeps the session manager's files open until the run goroutine
+	// exits. TempDir cleanup fails if the test returns first.
+	if !h.WaitSession("fresh-session", 2*time.Second) {
+		t.Fatal("fresh running run did not finish")
+	}
 }
