@@ -60,6 +60,28 @@ func TestStartSetsExecutionAndDoesNotPassUnconfigured(t *testing.T) {
 	}
 }
 
+func TestMissingToolEvidenceIsUnknown(t *testing.T) {
+	eval := Eval{
+		Keyword: &KeywordEval{Contains: []string{"dark mode"}},
+		Trace:   &TraceEval{Required: []string{"remember"}},
+	}
+	got := Judge(eval, Evidence{
+		Assistant: "saved dark mode",
+		ToolsSet:  false,
+	}, ExecutionCompleted)
+	if got != VerdictUnknown {
+		t.Fatalf("verdict=%s", got)
+	}
+}
+
+func TestMissingMemoryEvidenceIsUnknown(t *testing.T) {
+	eval := Eval{MemoryWrite: &MemoryWriteEval{Content: "dark mode"}}
+	got := Judge(eval, Evidence{MemorySet: false}, ExecutionCompleted)
+	if got != VerdictUnknown {
+		t.Fatalf("verdict=%s", got)
+	}
+}
+
 func TestForbiddenToolFailsEvenWhenKeywordsMatch(t *testing.T) {
 	eval := Eval{
 		Keyword: &KeywordEval{Contains: []string{"dark mode"}},
