@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +110,37 @@ func TestHandleMetrics(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "text/plain; version=0.0.4" {
 		t.Errorf("expected prometheus content type, got %s", ct)
+	}
+	if !strings.Contains(w.Body.String(), "lh_requests_total") {
+		t.Fatalf("missing runtime metrics:\n%s", w.Body.String())
+	}
+}
+
+func TestHandleMetricsAppendsAgentToolHistograms(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	s.metrics.RecordChatRequest()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
+	w := httptest.NewRecorder()
+	s.handleMetrics(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "lh_requests_total") {
+		t.Fatalf("missing runtime export:\n%s", body)
+	}
+	if got := a.MetricsPrometheus(); got != "" && !strings.Contains(body, got) {
+		t.Fatalf("agent histograms missing from body:\n%s", body)
+	}
+
+	runtime := s.metrics.ExportPrometheus()
+	toolLine := "lh_tool_call_duration_seconds_bucket{tool=\"terminal\",le=\"50ms\"} 1\n"
+	joined := runtime + "\n" + toolLine
+	if !strings.Contains(joined, "lh_requests_total") || !strings.Contains(joined, "lh_tool_call_duration_seconds_bucket") {
+		t.Fatalf("joined export dropped a side:\n%s", joined)
+	}
+	if !strings.Contains(body, runtime) {
+		t.Fatalf("handler dropped runtime text:\n%s", body)
 	}
 }
 

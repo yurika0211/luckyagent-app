@@ -617,7 +617,24 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(s.metrics.ExportPrometheus()))
+	w.Write([]byte(metricsPrometheusBody(s)))
+}
+
+// metricsPrometheusBody joins runtime counters and agent tool histograms.
+// The histogram text comes from lucky-agent PR #401 Agent.MetricsPrometheus.
+func metricsPrometheusBody(s *Server) string {
+	if s == nil || s.metrics == nil {
+		return ""
+	}
+	body := s.metrics.ExportPrometheus()
+	if s.agent == nil {
+		return body
+	}
+	extra := s.agent.MetricsPrometheus()
+	if extra == "" {
+		return body
+	}
+	return body + "\n" + extra
 }
 
 // handleChat 流式聊天 (SSE)

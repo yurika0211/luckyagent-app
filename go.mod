@@ -10,9 +10,9 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
-	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261029200419-edd370accfb4
+	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261105185033-b85e35337bcc
 	github.com/yurika0211/luckyagent-plugins v0.1.0
-	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261029173750-ae447fbb1f94
+	github.com/yurika0211/luckyagent-runtime v0.3.1
 	golang.org/x/term v0.41.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
@@ -28,8 +28,8 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.42 // indirect
 	github.com/yuin/goldmark v1.3.5 // indirect
-	github.com/yurika0211/aestus v0.1.0 // indirect
-	github.com/yurika0211/luckyagent-orchestrator v0.1.1 // indirect
+	github.com/yurika0211/aestus v0.1.1-0.20261031163709-5ea8b187b6af // indirect
+	github.com/yurika0211/luckyagent-orchestrator v0.1.2-0.20261030050707-d4020609f3f2 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0 // indirect
@@ -77,7 +77,7 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yurika0211/luckyagent-api v0.2.5-0.20261105064232-713f5fa52915
 	github.com/yurika0211/luckyagent-gateway v0.2.3-0.20261023165540-c9f71654f308
-	github.com/yurika0211/luckyagent-tools v0.2.4-0.20261025155312-14ca32a46742
+	github.com/yurika0211/luckyagent-tools v0.2.5
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
