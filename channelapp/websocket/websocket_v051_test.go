@@ -635,6 +635,36 @@ func TestToolResultMessageSerialization(t *testing.T) {
 	}
 }
 
+func TestToolResultDurationRoundTrip(t *testing.T) {
+	msg, err := NewMessage(TypeToolResult, "test-session", ToolResultData{
+		Name:       "terminal",
+		Success:    false,
+		Output:     "command timed out",
+		DurationMS: 30000,
+	})
+	if err != nil {
+		t.Fatalf("NewMessage error: %v", err)
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+	if !strings.Contains(string(data), `"duration_ms":30000`) {
+		t.Fatalf("duration missing from wire JSON: %s", data)
+	}
+	var received Message
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	var parsed ToolResultData
+	if err := received.ParseData(&parsed); err != nil {
+		t.Fatalf("ParseData error: %v", err)
+	}
+	if parsed.DurationMS != 30000 {
+		t.Fatalf("duration_ms = %d", parsed.DurationMS)
+	}
+}
+
 func TestAttachmentsFromResponseExtractsMediaDirective(t *testing.T) {
 	h := NewAgentHandler(nil)
 	response, attachments := h.attachmentsFromResponse("图片已生成\nMEDIA:https://example.com/generated.png")

@@ -784,22 +784,8 @@ chatEvents:
 			_ = writeFrame(map[string]any{"type": "cancelled", "status": "cancelled", "error": ctx.Err().Error()})
 			return
 		}
-		frame := map[string]interface{}{
-			"type":        chatEventTypeString(event.Type),
-			"content":     event.Content,
-			"session_id":  sessionID,
-			"name":        event.Name,
-			"args":        event.Args,
-			"result":      event.Result,
-			"observation": event.Observation,
-			"approval":    event.Approval,
-			"error":       nil,
-			"created_at":  event.CreatedAt,
-			"usage":       event.Usage,
-		}
-		if event.Err != nil {
-			frame["error"] = event.Err.Error()
-		}
+		frame := chatEventFrame(event)
+		frame["session_id"] = sessionID
 		if event.Type == agent.ChatEventError {
 			if ctx.Err() != nil || errors.Is(event.Err, context.Canceled) {
 				_ = writeFrame(map[string]any{"type": "cancelled", "status": "cancelled", "error": "chat cancelled"})
@@ -1856,6 +1842,26 @@ func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, handlers
 
 func (s *Server) sendSSEError(w io.Writer, flusher http.Flusher, msg string) {
 	transport.SendSSEError(w, flusher, msg)
+}
+
+func chatEventFrame(event agent.ChatEvent) map[string]any {
+	frame := map[string]any{
+		"type":        chatEventTypeString(event.Type),
+		"content":     event.Content,
+		"name":        event.Name,
+		"args":        event.Args,
+		"result":      event.Result,
+		"duration_ms": event.Duration.Milliseconds(),
+		"observation": event.Observation,
+		"approval":    event.Approval,
+		"error":       nil,
+		"created_at":  event.CreatedAt,
+		"usage":       event.Usage,
+	}
+	if event.Err != nil {
+		frame["error"] = event.Err.Error()
+	}
+	return frame
 }
 
 func chatEventTypeString(t agent.ChatEventType) string {

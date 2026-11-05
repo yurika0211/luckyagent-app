@@ -31,7 +31,10 @@ type Event struct {
 	Args    string
 	Result  string
 	Round   int
-	Err     error
+	// Duration is the finished tool call's wall clock. It is set on tool
+	// result events. Zero means the producer did not measure the call.
+	Duration time.Duration
+	Err      error
 
 	// Optional structured payloads. Nil when the event type does not carry them.
 	Approval    *ApprovalInfo
@@ -115,9 +118,10 @@ func mapEvent(ev agent.ChatEvent) Event {
 		TaskID:  ev.TaskID,
 		Name:    ev.Name,
 		Args:    ev.Args,
-		Result:  ev.Result,
-		Round:   ev.Round,
-		Err:     ev.Err,
+		Result:   ev.Result,
+		Round:    ev.Round,
+		Duration: ev.Duration,
+		Err:      ev.Err,
 	}
 	if ev.Approval != nil {
 		out.Approval = &ApprovalInfo{
