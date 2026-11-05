@@ -401,6 +401,7 @@ func newRootCmd() *cobra.Command {
 
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, credentialCmd, diagCmd, soulCmd, versionCmd, newUpdateCmd(), serveCmd, qrCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd, newSessionCmd())
 	rootCmd.AddCommand(newPluginCmd())
+	rootCmd.AddCommand(newEvalCmd())
 
 	return rootCmd
 }
