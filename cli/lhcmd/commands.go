@@ -1383,12 +1383,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 				LogAccess:           cfg.MsgGateway.NapCat.CrossGroupRead.LogAccess,
 			}))
 		}
-		handler := qqofficial.NewHandlerWithOptions(napcatAdapter, a, qqofficial.HandlerOptions{
-			PlatformName:    "napcat",
-			DisplayName:     "NapCat QQ 网关",
-			LogPrefix:       "napcat",
-			FinalAnswerOnly: true,
-		})
+		handler := qqofficial.NewHandlerWithOptions(napcatAdapter, a, qqofficial.NapCatHandlerOptions(qqofficial.NapCatProgressFromConfigFile(a.Config())))
 		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "napcat"))
 		napcatAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
 			return handler.HandleMessage(ctx, msg)
