@@ -97,8 +97,9 @@ func TestHandleUIActionQueuesValidatedChoice(t *testing.T) {
 	if !h.WaitSession(client.SessionID, 2*time.Second) {
 		t.Fatal("action run did not finish")
 	}
-	if _, _, err := h.takeUIAction(client.SessionID, openui.Action{TreeID: "tree-1", WidgetID: "go"}); err == nil {
-		t.Fatal("action tree was reusable after a successful dispatch")
+	label, chartApply, err := h.takeUIAction(client.SessionID, openui.Action{TreeID: "tree-1", WidgetID: "go"})
+	if err != nil || chartApply || label != "继续" {
+		t.Fatalf("second action = %q chart=%v err=%v", label, chartApply, err)
 	}
 }
 
@@ -215,6 +216,62 @@ drained:
 	data, _ = json.Marshal(UIActionData{TreeID: "tree-1", WidgetID: "missing"})
 	h.HandleMessage(client, &Message{Type: TypeUIAction, SessionID: client.SessionID, ID: "chart-unknown", Data: data})
 	assertUIActionError(t, client, "UI_ACTION_REJECTED", "not an action")
+}
+
+func TestHandleUIActionChartStartKeepsTree(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan agent.UserTurnInput, 1)
+	runtime := &stubAgentRuntime{
+		sessions: mgr,
+		tools:    tool.NewRegistry(),
+		chatStreamInputFn: func(ctx context.Context, _ string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			started <- input
+			out := make(chan agent.ChatEvent, 1)
+			out <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "done"}
+			close(out)
+			return out, nil
+		},
+	}
+	h := NewAgentHandler(runtime)
+	h.recordUIDelta("ui-session", openui.Delta{
+		TreeID: "tree-1",
+		State:  openui.StateComplete,
+		Nodes:  []openui.Node{{ID: "chart-1", Type: "Chart"}},
+	})
+	client := &Client{ID: "android", SessionID: "ui-session", Send: make(chan *Message, 16)}
+	data, err := json.Marshal(UIActionData{
+		TreeID:   "tree-1",
+		WidgetID: "chart-1",
+		Values:   map[string]any{"window": "3", "kind": "mix", "start": "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.HandleMessage(client, &Message{Type: TypeUIAction, SessionID: client.SessionID, ID: "chart-start", Data: data})
+	select {
+	case input := <-started:
+		if !strings.Contains(input.RoutingText, "start") ||
+			!strings.Contains(input.RoutingText, "The user applied chart parameters") ||
+			strings.Contains(input.RoutingText, "The user selected") {
+			t.Fatalf("chart start prompt = %q", input.RoutingText)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("chart apply with start did not start a run")
+	}
+	if !h.WaitSession(client.SessionID, 2*time.Second) {
+		t.Fatal("chart apply with start did not finish")
+	}
+	label, chartApply, err := h.takeUIAction(client.SessionID, openui.Action{
+		TreeID:   "tree-1",
+		WidgetID: "chart-1",
+		Values:   map[string]any{"window": "3", "kind": "mix", "start": "2"},
+	})
+	if err != nil || !chartApply || label != "chart-1" {
+		t.Fatalf("chart tree after start = %q chart=%v err=%v", label, chartApply, err)
+	}
 }
 
 func assertUIActionError(t *testing.T, client *Client, code, text string) {

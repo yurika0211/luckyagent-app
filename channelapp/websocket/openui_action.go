@@ -131,12 +131,8 @@ func (h *AgentHandler) takeUIAction(sessionID string, action openui.Action) (lab
 	var ok bool
 	label, ok = findUIActionLabel(delta, action.WidgetID)
 	if ok {
-		// An Actions control is one-shot. The next Agent turn is responsible
-		// for emitting a replacement tree.
-		delete(trees, action.TreeID)
-		if len(trees) == 0 {
-			delete(h.uiTrees, strings.TrimSpace(sessionID))
-		}
+		// Actions stay on the tree so another item, or the same item, can be
+		// chosen again until the tree expires.
 		return label, false, nil
 	}
 	chartLabel, chart := findUIChartApply(delta, action.WidgetID)
