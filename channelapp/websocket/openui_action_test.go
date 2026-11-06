@@ -97,7 +97,7 @@ func TestHandleUIActionQueuesValidatedChoice(t *testing.T) {
 	if !h.WaitSession(client.SessionID, 2*time.Second) {
 		t.Fatal("action run did not finish")
 	}
-	if _, err := h.takeUIAction(client.SessionID, openui.Action{TreeID: "tree-1", WidgetID: "go"}); err == nil {
+	if _, _, err := h.takeUIAction(client.SessionID, openui.Action{TreeID: "tree-1", WidgetID: "go"}); err == nil {
 		t.Fatal("action tree was reusable after a successful dispatch")
 	}
 }
@@ -129,6 +129,91 @@ func TestHandleUIActionRejectsStreamingAndUnknownWidget(t *testing.T) {
 	})
 	data, _ = json.Marshal(UIActionData{TreeID: "complete-tree", WidgetID: "missing"})
 	h.HandleMessage(client, &Message{Type: TypeUIAction, SessionID: client.SessionID, ID: "action-widget", Data: data})
+	assertUIActionError(t, client, "UI_ACTION_REJECTED", "not an action")
+}
+
+func TestHandleUIActionKeepsChartTree(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan agent.UserTurnInput, 2)
+	runtime := &stubAgentRuntime{
+		sessions: mgr,
+		tools:    tool.NewRegistry(),
+		chatStreamInputFn: func(ctx context.Context, _ string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			started <- input
+			out := make(chan agent.ChatEvent, 1)
+			out <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "done"}
+			close(out)
+			return out, nil
+		},
+	}
+	h := NewAgentHandler(runtime)
+	h.recordUIDelta("ui-session", openui.Delta{
+		TreeID: "tree-1",
+		State:  openui.StateComplete,
+		Nodes: []openui.Node{{
+			ID:   "chart-1",
+			Type: "Chart",
+			Props: map[string]any{
+				"kind":   "line",
+				"series": []any{},
+			},
+		}},
+	})
+	client := &Client{ID: "android", SessionID: "ui-session", Send: make(chan *Message, 16)}
+	data, err := json.Marshal(UIActionData{
+		TreeID:   "tree-1",
+		WidgetID: "chart-1",
+		Values:   map[string]any{"window": "4", "kind": "scatter"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.HandleMessage(client, &Message{Type: TypeUIAction, SessionID: client.SessionID, ID: "chart-apply-1", Data: data})
+	select {
+	case input := <-started:
+		if !strings.Contains(input.RoutingText, "[OpenUI action]") ||
+			!strings.Contains(input.RoutingText, "chart-1") ||
+			!strings.Contains(input.RoutingText, "window") ||
+			strings.Contains(input.RoutingText, "The user selected") {
+			t.Fatalf("chart prompt = %q", input.RoutingText)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("chart apply did not start a run")
+	}
+	if !h.WaitSession(client.SessionID, 2*time.Second) {
+		t.Fatal("chart apply did not finish")
+	}
+	label, chartApply, err := h.takeUIAction(client.SessionID, openui.Action{
+		TreeID:   "tree-1",
+		WidgetID: "chart-1",
+		Values:   map[string]any{"window": "4"},
+	})
+	if err != nil || !chartApply || label != "chart-1" {
+		t.Fatalf("second chart apply = %q chart=%v err=%v", label, chartApply, err)
+	}
+
+	for {
+		select {
+		case <-client.Send:
+		default:
+			goto drained
+		}
+	}
+drained:
+	h.recordUIDelta("ui-session", openui.Delta{
+		TreeID: "streaming-chart",
+		State:  openui.StateStreaming,
+		Nodes:  []openui.Node{{ID: "chart-1", Type: "Chart"}},
+	})
+	data, _ = json.Marshal(UIActionData{TreeID: "streaming-chart", WidgetID: "chart-1"})
+	h.HandleMessage(client, &Message{Type: TypeUIAction, SessionID: client.SessionID, ID: "chart-streaming", Data: data})
+	assertUIActionError(t, client, "UI_ACTION_REJECTED", "not ready")
+
+	data, _ = json.Marshal(UIActionData{TreeID: "tree-1", WidgetID: "missing"})
+	h.HandleMessage(client, &Message{Type: TypeUIAction, SessionID: client.SessionID, ID: "chart-unknown", Data: data})
 	assertUIActionError(t, client, "UI_ACTION_REJECTED", "not an action")
 }
 
