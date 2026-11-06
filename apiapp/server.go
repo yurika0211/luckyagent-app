@@ -3,7 +3,8 @@ package server
 import (
 	"context"
 	"crypto/rand"
-
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1254,13 +1255,33 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hasLimit := r.URL.Query().Has("limit")
-	var rawMessages []provider.Message
-	var total int
-	var hasMore bool
 	var limit, offset int
 	if hasLimit {
 		limit = boundedQueryInt(r, "limit", defaultHistoryLimit, 1, maxHistoryLimit)
 		offset = boundedQueryInt(r, "offset", 0, 0, 1_000_000)
+	}
+	includeFull := historyIncludeFull(r)
+	previewChars := s.historyPreviewChars()
+	countsOnly := historyCountsOnly(r)
+	etag := historyETag(sess, historyETagInput{
+		IncludeFull: includeFull, PreviewChars: previewChars, HasLimit: hasLimit,
+		Limit: limit, Offset: offset, CountsOnly: countsOnly,
+	})
+	w.Header().Set("ETag", etag)
+	if ifNoneMatch(r, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	var rawMessages []provider.Message
+	var total int
+	var hasMore bool
+	if countsOnly {
+		total = sess.MessageCount()
+		if hasLimit {
+			hasMore = offset+limit < total
+		}
+	} else if hasLimit {
 		var err error
 		rawMessages, total, hasMore, err = sess.GetMessagesPage(limit, offset)
 		if err != nil {
@@ -1276,20 +1297,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		total = len(rawMessages)
 	}
-	includeFull := false
-	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("include"))); v == "full" || strings.Contains(v, "full") {
-		includeFull = true
-	}
-	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("full"))); v == "1" || v == "true" || v == "yes" {
-		includeFull = true
-	}
-	previewChars := 4000
-	if s.agent != nil && s.agent.Config() != nil {
-		if n := s.agent.Config().Get().Context.HistoryPreviewChars; n > 0 {
-			previewChars = n
-		}
-	}
 	messages := s.historyMessagesWithOptions(rawMessages, includeFull, previewChars)
+	if countsOnly {
+		messages = []sessionHistoryMessage{}
+	}
 
 	pinned, project := sess.Organization()
 	role, systemPrompt := sess.AgentProfile()
@@ -1328,6 +1339,97 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.sendJSON(w, http.StatusOK, payload)
+}
+
+type historyETagInput struct {
+	IncludeFull  bool
+	PreviewChars int
+	HasLimit     bool
+	Limit        int
+	Offset       int
+	CountsOnly   bool
+}
+
+func historyIncludeFull(r *http.Request) bool {
+	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("include"))); v == "full" || strings.Contains(v, "full") {
+		return true
+	}
+	v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("full")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+func historyCountsOnly(r *http.Request) bool {
+	return strings.TrimSpace(r.URL.Query().Get("counts")) == "1"
+}
+
+func (s *Server) historyPreviewChars() int {
+	previewChars := 4000
+	if s != nil && s.agent != nil && s.agent.Config() != nil {
+		if n := s.agent.Config().Get().Context.HistoryPreviewChars; n > 0 {
+			previewChars = n
+		}
+	}
+	return previewChars
+}
+
+func historyETag(sess *session.Session, in historyETagInput) string {
+	pinned, project := sess.Organization()
+	role, _ := sess.AgentProfile()
+	recap, recapAt := sess.Recap()
+	recapStamp := ""
+	if recapAt != nil {
+		recapStamp = recapAt.UTC().Format(time.RFC3339Nano)
+	}
+	mode := "preview"
+	if in.IncludeFull {
+		mode = "full"
+	}
+	page := "unpaged"
+	if in.HasLimit {
+		page = fmt.Sprintf("page:%d:%d", in.Limit, in.Offset)
+	}
+	body := "messages"
+	if in.CountsOnly {
+		body = "counts"
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		sess.ID,
+		strconv.Itoa(sess.MessageCount()),
+		sess.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		strconv.FormatInt(sess.ByteSize(), 10),
+		sess.Format(),
+		mode,
+		strconv.Itoa(in.PreviewChars),
+		page,
+		body,
+		sess.Title,
+		strconv.FormatBool(pinned),
+		project,
+		role,
+		recap,
+		recapStamp,
+	}, "\n")))
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+func ifNoneMatch(r *http.Request, etag string) bool {
+	header := r.Header.Get("If-None-Match")
+	if header == "" || etag == "" {
+		return false
+	}
+	want := strings.Trim(etag, `"`)
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if part == "*" {
+			return true
+		}
+		part = strings.TrimPrefix(part, "W/")
+		part = strings.TrimSpace(strings.Trim(part, `"`))
+		if part != "" && part == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request, sessionID string) {
