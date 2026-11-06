@@ -618,7 +618,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(metricsPrometheusBody(s)))
+	w.Write([]byte(appendProcessMemoryMetrics(metricsPrometheusBody(s))))
 }
 
 // metricsPrometheusBody joins runtime counters and agent tool histograms.
