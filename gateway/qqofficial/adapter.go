@@ -10,9 +10,12 @@ var DefaultConfig = app.DefaultConfig
 
 type Handler = app.Handler
 type HandlerOptions = app.HandlerOptions
+type NapCatProgressConfig = app.NapCatProgressConfig
 
 var NewAdapter = app.NewAdapter
 var NewHandler = app.NewHandler
 var NewHandlerWithOptions = app.NewHandlerWithOptions
+var NapCatHandlerOptions = app.NapCatHandlerOptions
+var NapCatProgressFromConfigFile = app.NapCatProgressFromConfigFile
 
 type Runtime = app.Runtime

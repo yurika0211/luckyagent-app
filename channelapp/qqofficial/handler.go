@@ -116,11 +116,17 @@ type Runtime interface {
 }
 
 type HandlerOptions struct {
-	PlatformName     string
-	DisplayName      string
-	LogPrefix        string
-	FinalAnswerOnly  bool
-	DeliveryGuidance func(string) string
+	PlatformName           string
+	DisplayName            string
+	LogPrefix              string
+	FinalAnswerOnly        bool
+	ProgressSummaryWithLLM bool
+	ProgressSummaryPrompt  string
+	ShowToolDetails        bool
+	DeliveryGuidance       func(string) string
+	// RoundSummary, when set, replaces Agent progress feedback. Tests use it
+	// so a nil Runtime does not call a provider.
+	RoundSummary func(ctx context.Context, userInput string, round int, observations []string, prompt string) (string, error)
 }
 
 type Handler struct {
@@ -143,6 +149,10 @@ type Handler struct {
 	displayName       string
 	logPrefix         string
 	finalAnswerOnly   bool
+	progressSummary   bool
+	progressPrompt    string
+	showToolDetails   bool
+	roundSummary      func(context.Context, string, int, []string, string) (string, error)
 	deliveryGuidance  func(string) string
 	workerWG          sync.WaitGroup
 	workerGeneration  uint64
@@ -174,6 +184,11 @@ func NewHandlerWithOptions(adapter sender, agentRuntime Runtime, opts HandlerOpt
 		deliveryGuidance = qqMediaDeliveryGuidance
 	}
 
+	roundSummary := opts.RoundSummary
+	if roundSummary == nil {
+		roundSummary = progressFeedbackRoundSummary(agentRuntime)
+	}
+
 	h := &Handler{
 		adapter:           adapter,
 		mcpAdmin:          mcpAdmin,
@@ -191,6 +206,10 @@ func NewHandlerWithOptions(adapter sender, agentRuntime Runtime, opts HandlerOpt
 		displayName:       displayName,
 		logPrefix:         logPrefix,
 		finalAnswerOnly:   opts.FinalAnswerOnly,
+		progressSummary:   opts.ProgressSummaryWithLLM,
+		progressPrompt:    strings.TrimSpace(opts.ProgressSummaryPrompt),
+		showToolDetails:   opts.ShowToolDetails,
+		roundSummary:      roundSummary,
 		deliveryGuidance:  deliveryGuidance,
 	}
 	h.commands = h.buildCommandRegistry()
@@ -2427,9 +2446,12 @@ func (h *Handler) handleTurnChatEventStream(chatCtx context.Context, msg *gatewa
 	var finalContent strings.Builder
 	currentRound := 1
 	var trace *qqProgressTrace
-	if !h.finalAnswerOnly {
+	quiet := h.napcatQuiet()
+	if !h.finalAnswerOnly && !quiet {
 		trace = newQQProgressTrace()
 	}
+	var roundNotes []string
+	lastSummaryRound := 0
 
 	for {
 		select {
@@ -2454,9 +2476,15 @@ func (h *Handler) handleTurnChatEventStream(chatCtx context.Context, msg *gatewa
 			switch evt.Type {
 			case turn.ChatEventThinking:
 				if nextRound := extractQQRoundNumber(evt.Content); nextRound > currentRound {
+					h.flushNapCatRoundSummary(msg, currentRound, roundNotes)
+					lastSummaryRound = currentRound
 					currentRound = nextRound
+					roundNotes = nil
 				}
-				if h.finalAnswerOnly {
+				if h.finalAnswerOnly || quiet {
+					if h.progressSummary && strings.TrimSpace(evt.Content) != "" {
+						roundNotes = append(roundNotes, "Thinking: "+clipNapCatNote(evt.Content, 160))
+					}
 					continue
 				}
 				trace.AddThinking(evt.Content, currentRound)
@@ -2467,14 +2495,25 @@ func (h *Handler) handleTurnChatEventStream(chatCtx context.Context, msg *gatewa
 				if h.finalAnswerOnly {
 					continue
 				}
-				trace.AddToolCall(evt.Name, evt.Args)
-				h.sendProgress(context.Background(), msg, qqToolCallMessage(evt.Name, evt.Args))
-			case turn.ChatEventToolResult:
-				if h.finalAnswerOnly {
+				if quiet {
+					// NapCat never emits the args-bearing call line.
 					continue
 				}
+				if trace != nil {
+					trace.AddToolCall(evt.Name, evt.Args)
+				}
+				h.sendProgress(context.Background(), msg, qqToolCallMessage(evt.Name, evt.Args))
+			case turn.ChatEventToolResult:
 				result := qqToolResultText(evt)
-				trace.AddToolResult(evt.Name, result)
+				if h.progressSummary && strings.TrimSpace(evt.Name) != "" {
+					roundNotes = append(roundNotes, "Tool result ("+evt.Name+"): "+clipNapCatNote(result, 120))
+				}
+				if h.finalAnswerOnly || (quiet && !h.showToolDetails) {
+					continue
+				}
+				if trace != nil {
+					trace.AddToolResult(evt.Name, result)
+				}
 				h.sendProgress(context.Background(), msg, qqToolResultMessage(evt.Name, result))
 			case turn.ChatEventContent:
 				finalContent.WriteString(evt.Content)
@@ -2483,11 +2522,14 @@ func (h *Handler) handleTurnChatEventStream(chatCtx context.Context, msg *gatewa
 					finalContent.Reset()
 					finalContent.WriteString(evt.Content)
 				}
+				if lastSummaryRound != currentRound {
+					h.flushNapCatRoundSummary(msg, currentRound, roundNotes)
+				}
 				out := strings.TrimSpace(finalContent.String())
 				if out == "" {
 					out = "我这边暂时还没有整理出可发送的结果。"
 				}
-				if h.finalAnswerOnly {
+				if h.finalAnswerOnly || quiet {
 					return h.sendAssistantResponse(context.Background(), msg, out)
 				}
 				return h.sendAssistantResponseWithTrace(context.Background(), msg, out, trace)
@@ -2615,6 +2657,77 @@ func (h *Handler) handleTurnChatEventStreamWithSender(chatCtx context.Context, m
 			}
 		}
 	}
+}
+
+func (h *Handler) napcatQuiet() bool {
+	return h != nil && h.platformName == "napcat" && !h.finalAnswerOnly
+}
+
+type napcatProgressFeedback interface {
+	ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error)
+}
+
+func progressFeedbackRoundSummary(agentRuntime Runtime) func(context.Context, string, int, []string, string) (string, error) {
+	feedback, ok := agentRuntime.(napcatProgressFeedback)
+	if !ok || feedback == nil {
+		return nil
+	}
+	return func(ctx context.Context, userInput string, round int, observations []string, prompt string) (string, error) {
+		return feedback.ProgressFeedbackWithPrompt(ctx, userInput, round, observations, prompt)
+	}
+}
+
+func (h *Handler) flushNapCatRoundSummary(msg *gateway.Message, round int, notes []string) {
+	if h == nil || !h.progressSummary || msg == nil || len(notes) == 0 {
+		return
+	}
+	summary := ""
+	if h.roundSummary != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		text, err := h.roundSummary(ctx, "", round, notes, h.progressPrompt)
+		cancel()
+		if err == nil {
+			summary = strings.TrimSpace(text)
+		}
+	}
+	if summary == "" {
+		summary = napcatFallbackSummary(round, notes)
+	}
+	summary = sanitizeNapCatRoundSummary(summary)
+	if summary == "" {
+		return
+	}
+	h.sendProgress(context.Background(), msg, summary)
+}
+
+func napcatFallbackSummary(round int, notes []string) string {
+	if len(notes) == 0 {
+		return ""
+	}
+	last := notes[len(notes)-1]
+	if strings.Contains(last, "Thinking...") {
+		if round > 1 {
+			return fmt.Sprintf("第 %d 轮先看完这一步，结果我接着整理。", round)
+		}
+		return "这一轮我先看完问题，接着整理结果。"
+	}
+	return fmt.Sprintf("第 %d 轮先记一下：%s", round, clipNapCatNote(last, 80))
+}
+
+func sanitizeNapCatRoundSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" || strings.Contains(summary, "Thinking...") {
+		return ""
+	}
+	return summary
+}
+
+func clipNapCatNote(text string, max int) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if max <= 0 || len(text) <= max {
+		return text
+	}
+	return text[:max] + "…"
 }
 
 func extractQQRoundNumber(thinking string) int {

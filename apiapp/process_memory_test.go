@@ -41,6 +41,15 @@ func TestHandleMetricsIncludesProcessMemory(t *testing.T) {
 	if !strings.Contains(body, "lh_go_memstats_sys_bytes") {
 		t.Fatalf("missing sys gauge:\n%s", body)
 	}
+	histograms := metricsPrometheusBody(s)
+	if histograms == "" || !strings.Contains(body, histograms) {
+		t.Fatalf("process memory wrapper dropped histogram body:\n%s", body)
+	}
+	toolLine := "lh_tool_call_duration_seconds_bucket{tool=\"terminal\",le=\"50ms\"} 1\n"
+	wrapped := appendProcessMemoryMetrics(histograms + "\n" + toolLine)
+	if !strings.Contains(wrapped, toolLine) || !strings.Contains(wrapped, "lh_go_memstats_heap_alloc_bytes") {
+		t.Fatalf("appendProcessMemoryMetrics dropped a side:\n%s", wrapped)
+	}
 }
 
 func TestProcessMemoryGuardTripsAtTinyThreshold(t *testing.T) {
