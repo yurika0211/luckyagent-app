@@ -1,0 +1,29 @@
+{
+  "name": "sample-chat-tool-memory",
+  "cases": [
+    {
+      "id": "chat-tool-memory",
+      "turns": [
+        {
+          "input": {"user": "Read the note and remember that I prefer dark mode."},
+          "expected": {"summary": "read a file and write a preference"},
+          "evaluation": {
+            "keyword": {"contains": ["dark mode"]},
+            "trace": {"required": ["file_read", "remember"], "forbidden": ["terminal"]},
+            "memory_write": {"content": "dark mode", "category": "preference"}
+          },
+          "wait": {}
+        },
+        {
+          "input": {"user": "What preference did you save?"},
+          "expected": {"summary": "confirm the saved preference"},
+          "evaluation": {
+            "keyword": {"contains": ["saved"]},
+            "regex": {"patterns": ["saved"]}
+          },
+          "wait": {}
+        }
+      ]
+    }
+  ]
+}
