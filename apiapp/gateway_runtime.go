@@ -417,9 +417,11 @@ func (s *Server) buildGateway(name string, req gatewayStartRequest) (gateway.Gat
 				LogAccess:     mg.NapCat.CrossGroupRead.LogAccess,
 			}))
 		}
-		h := qqofficial.NewHandlerWithOptions(adapter, s.agent, qqofficial.HandlerOptions{
-			PlatformName: "napcat", DisplayName: "NapCat QQ 网关", LogPrefix: "napcat", FinalAnswerOnly: true,
-		})
+		progress := qqofficial.NapCatProgressConfig{}
+		if s != nil && s.agent != nil {
+			progress = qqofficial.NapCatProgressFromConfigFile(s.agent.Config())
+		}
+		h := qqofficial.NewHandlerWithOptions(adapter, s.agent, qqofficial.NapCatHandlerOptions(progress))
 		if homeDir != "" {
 			h.SetDataDir(filepath.Join(homeDir, "data", "napcat"))
 		}
