@@ -1,0 +1,90 @@
+{
+  "schema_version": "agent-eval/v1",
+  "name": "agent-eval-sample-v1",
+  "description": "第一刀样品。一条完整多轮，字段摊开，覆盖普通聊天、工具路由、记忆写入/更正、长任务续跑。改这份文件只影响之后新建的 run；已冻结的 manifest.json 不变。",
+  "defaults": {
+    "mode": "replay_abort",
+    "profile": "chat",
+    "workspace": "."
+  },
+  "cases": [
+    {
+      "id": "sample-memory-correct-resume",
+      "title": "记住偏好、用日历核对、更正记忆并续跑长任务",
+      "coverage": ["chat", "tool_route", "memory_write", "long_task"],
+      "mode": "replay_resume",
+      "profile": "long_task",
+      "workspace": ".",
+      "turns": [
+        {
+          "input": "你好。先不用工具，用一句话确认你在听，并说明接下来会按我的要求记笔记。",
+          "expected": "一句确认在听的回复，不调用工具。",
+          "evaluation": {
+            "keyword": {
+              "all": ["在听"],
+              "any": ["确认", "记下", "笔记"]
+            },
+            "trace": {
+              "forbidden": ["remember", "memory", "terminal", "web_search", "delegate_task"]
+            }
+          },
+          "wait": "0s"
+        },
+        {
+          "input": "请记住：我的晨会固定在周二 09:30，地点是三楼会议室。不要去网上搜索。",
+          "expected": "调用 remember 或 memory，写入「周二 09:30」和「三楼会议室」。",
+          "evaluation": {
+            "keyword": {
+              "all": ["周二", "09:30"]
+            },
+            "regex": {
+              "patterns": ["三楼会议室"]
+            },
+            "trace": {
+              "required": ["remember"],
+              "forbidden": ["web_search", "web_fetch", "terminal"]
+            },
+            "memory_write": {
+              "must_write": true,
+              "expected": ["周二 09:30", "三楼会议室"],
+              "forbidden": ["周三", "10:00"]
+            }
+          },
+          "wait": "0s"
+        },
+        {
+          "input": "更正一下：晨会改到周三 10:00，地点不变。请把记忆改成更正后的值，不要保留周二 09:30。",
+          "expected": "再次写入记忆，内容是周三 10:00 和三楼会议室，不再写入周二 09:30。",
+          "evaluation": {
+            "regex": {
+              "patterns": ["周三\\s*10:00"]
+            },
+            "trace": {
+              "required": ["remember"],
+              "forbidden": ["web_search", "file_delete"]
+            },
+            "memory_write": {
+              "must_write": true,
+              "expected": ["周三 10:00", "三楼会议室"],
+              "forbidden": ["周二 09:30"]
+            }
+          },
+          "wait": "0s"
+        },
+        {
+          "input": "按更正后的晨会安排，列出接下来要准备的三步，并说明你依据的是哪一条记忆。这一步可以多轮思考，但不要调用终端或删除文件。",
+          "expected": "回复包含周三 10:00、三楼会议室，以及三步准备，且不调用禁止工具。",
+          "evaluation": {
+            "keyword": {
+              "all": ["周三", "10:00", "三楼会议室"],
+              "any": ["第一步", "1.", "准备"]
+            },
+            "trace": {
+              "forbidden": ["terminal", "file_delete", "web_search"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

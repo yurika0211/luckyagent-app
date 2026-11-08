@@ -1,0 +1,22 @@
+{
+  "turns": {
+    "sample-memory-correct-resume#0": {
+      "response": "我在听，接下来按你的要求记笔记。",
+      "tools": []
+    },
+    "sample-memory-correct-resume#1": {
+      "response": "已记住：晨会固定在周二 09:30，地点是三楼会议室。",
+      "tools": [{"name": "remember", "arguments": "{\"content\":\"晨会周二 09:30 三楼会议室\"}", "result": "saved"}],
+      "memory_writes": [{"tool": "remember", "content": "晨会周二 09:30 三楼会议室", "result": "saved", "ok": true}]
+    },
+    "sample-memory-correct-resume#2": {
+      "response": "已更正：晨会改到周三 10:00，地点仍是三楼会议室。",
+      "tools": [{"name": "remember", "arguments": "{\"content\":\"晨会周三 10:00 三楼会议室\"}", "result": "saved"}],
+      "memory_writes": [{"tool": "remember", "content": "晨会周三 10:00 三楼会议室", "result": "saved", "ok": true}]
+    },
+    "sample-memory-correct-resume#3": {
+      "response": "依据记忆：周三 10:00，三楼会议室。第一步准备议程，第二步确认参会人，第三步提前打开会议室。",
+      "tools": []
+    }
+  }
+}

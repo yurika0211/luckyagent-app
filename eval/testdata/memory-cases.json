@@ -1,0 +1,218 @@
+{
+  "schema_version": "agent-eval/v1",
+  "name": "agent-eval-memory-v1",
+  "description": "记忆测试集。覆盖写入、禁止写、更正、跨轮召回、干扰项、显式冲突。每条 case 独立会话。召回只看回复。Go regexp 不支持负向预查，所以回复里是否还带旧值不在自动判定里，旧值只在写入证据的 forbidden 上检查。",
+  "defaults": {
+    "mode": "replay_abort",
+    "profile": "chat",
+    "workspace": "."
+  },
+  "cases": [
+    {
+      "id": "mem-write-preference",
+      "title": "写入一条稳定偏好",
+      "coverage": ["memory_write"],
+      "turns": [
+        {
+          "input": "请记住：我喝咖啡只加燕麦奶，不加糖。不要搜索，不要打开终端。",
+          "expected": "调用 remember，写入燕麦奶和不加糖。",
+          "evaluation": {
+            "trace": {
+              "required": ["remember"],
+              "forbidden": ["web_search", "terminal"]
+            },
+            "memory_write": {
+              "must_write": true,
+              "expected": ["燕麦奶", "不加糖"],
+              "forbidden": ["全脂奶", "加糖"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mem-no-write-chitchat",
+      "title": "闲聊不得写入记忆",
+      "coverage": ["chat", "memory_write"],
+      "turns": [
+        {
+          "input": "今天天气不错。这只是闲聊，不要记笔记，不要调用 remember 或 memory。",
+          "expected": "普通回复，不写记忆。",
+          "evaluation": {
+            "keyword": {
+              "any": ["好", "天气", "闲聊"]
+            },
+            "trace": {
+              "forbidden": ["remember", "memory", "web_search", "terminal"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mem-correct-stale",
+      "title": "更正后不得留下旧值",
+      "coverage": ["memory_write"],
+      "mode": "replay_resume",
+      "turns": [
+        {
+          "input": "请记住：项目代号是青鸟，仓库在 github.com/example/qingniao。不要搜索。",
+          "expected": "写入青鸟和仓库地址。",
+          "evaluation": {
+            "trace": {"required": ["remember"], "forbidden": ["web_search"]},
+            "memory_write": {
+              "must_write": true,
+              "expected": ["青鸟", "qingniao"],
+              "forbidden": ["赤兔"]
+            }
+          }
+        },
+        {
+          "input": "更正：项目代号改成赤兔，仓库不变。请把记忆改成更正后的值，不要保留青鸟。",
+          "expected": "再次写入，内容是赤兔，不再写入青鸟。",
+          "evaluation": {
+            "trace": {"required": ["remember"], "forbidden": ["web_search"]},
+            "memory_write": {
+              "must_write": true,
+              "expected": ["赤兔", "qingniao"],
+              "forbidden": ["青鸟"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mem-recall-after-write",
+      "title": "同会话写入后按记忆回答",
+      "coverage": ["memory_write", "chat"],
+      "turns": [
+        {
+          "input": "请记住：我的工号是 E-1842，座位在 B 区 12 号。不要搜索。",
+          "expected": "写入工号和座位。",
+          "evaluation": {
+            "trace": {"required": ["remember"], "forbidden": ["web_search", "terminal"]},
+            "memory_write": {
+              "must_write": true,
+              "expected": ["E-1842", "B 区 12 号"]
+            }
+          }
+        },
+        {
+          "input": "我的工号和座位是什么？只根据你刚才记下的内容回答，不要猜测，不要搜索。",
+          "expected": "回复同时包含 E-1842 和 B 区 12 号。",
+          "evaluation": {
+            "keyword": {"all": ["E-1842", "B 区 12 号"]},
+            "trace": {"forbidden": ["web_search", "terminal"]}
+          }
+        }
+      ]
+    },
+    {
+      "id": "mem-ignore-distractor",
+      "title": "多条事实里只召回被问的那条",
+      "coverage": ["memory_write", "chat"],
+      "turns": [
+        {
+          "input": "请一次记下三件事，不要搜索：1. 我养的猫叫米粒。2. 打印机密码是 4 位，口令是 9021。3. 我每周四远程办公。",
+          "expected": "写入猫名、打印机口令和远程办公日。",
+          "evaluation": {
+            "trace": {"required": ["remember"], "forbidden": ["web_search"]},
+            "memory_write": {
+              "must_write": true,
+              "expected": ["米粒", "9021", "周四"]
+            }
+          }
+        },
+        {
+          "input": "打印机口令是多少？不要提猫，也不要提远程办公。不要搜索。",
+          "expected": "只回答 9021。",
+          "evaluation": {
+            "keyword": {"all": ["9021"]},
+            "trace": {"forbidden": ["web_search", "terminal"]}
+          }
+        }
+      ]
+    },
+    {
+      "id": "mem-conflict-latest-wins",
+      "title": "同一字段冲突时采用更正后的值",
+      "coverage": ["memory_write", "chat"],
+      "mode": "replay_resume",
+      "turns": [
+        {
+          "input": "请记住：我的常用邮箱是 old.mail@example.com。不要搜索。",
+          "expected": "写入旧邮箱。",
+          "evaluation": {
+            "trace": {"required": ["remember"], "forbidden": ["web_search"]},
+            "memory_write": {
+              "must_write": true,
+              "expected": ["old.mail@example.com"]
+            }
+          }
+        },
+        {
+          "input": "更正：常用邮箱改成 new.mail@example.com。请更新记忆，不要保留 old.mail@example.com。",
+          "expected": "写入新邮箱，不把旧邮箱再写进去。",
+          "evaluation": {
+            "trace": {"required": ["remember"], "forbidden": ["web_search"]},
+            "memory_write": {
+              "must_write": true,
+              "expected": ["new.mail@example.com"],
+              "forbidden": ["old.mail@example.com"]
+            }
+          }
+        },
+        {
+          "input": "我的常用邮箱是哪个？只回答更正后的地址，不要搜索。",
+          "expected": "回复是 new.mail@example.com，不出现旧地址。",
+          "evaluation": {
+            "keyword": {"all": ["new.mail@example.com"]},
+            "trace": {"forbidden": ["web_search"]}
+          }
+        }
+      ]
+    },
+    {
+      "id": "mem-unknown-when-absent",
+      "title": "没记过的事实必须说明不知道",
+      "coverage": ["chat"],
+      "turns": [
+        {
+          "input": "我的护照号是什么？你没有这条记忆。不要编造，不要搜索，不要调用 remember。",
+          "expected": "明确说不知道或没有记录，不给出护照号样式的值。",
+          "evaluation": {
+            "keyword": {"any": ["不知道", "没有记录", "未记录", "没有这条"]},
+            "trace": {"forbidden": ["remember", "memory", "web_search", "terminal"]}
+          }
+        }
+      ]
+    },
+    {
+      "id": "mem-numeric-exact",
+      "title": "数字必须原样写入并原样召回",
+      "coverage": ["memory_write", "chat"],
+      "turns": [
+        {
+          "input": "请记住：门禁码是 170394，不是 170349。不要搜索。",
+          "expected": "写入 170394，不写入对调后的数字。",
+          "evaluation": {
+            "trace": {"required": ["remember"], "forbidden": ["web_search"]},
+            "memory_write": {
+              "must_write": true,
+              "expected": ["170394"],
+              "forbidden": ["170349"]
+            }
+          }
+        },
+        {
+          "input": "门禁码是多少？原样回答，不要搜索。",
+          "expected": "回复包含 170394，不包含 170349。",
+          "evaluation": {
+            "keyword": {"all": ["170394"]},
+            "trace": {"forbidden": ["web_search", "terminal"]}
+          }
+        }
+      ]
+    }
+  ]
+}

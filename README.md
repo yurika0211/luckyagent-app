@@ -14,6 +14,7 @@ configuration live in `luckyagent-runtime`.
 | `bootstrap` | Prepare components, inject the Agent, explicitly start services and transfer ownership |
 | `sdk` | Full in-process runtime SDK, including configuration/home initialization |
 | `cmd/*-bench`, `swebench`, `examples` | Product benchmarks, evaluation and examples |
+| `eval`, `cmd/la-eval` | Real Agent-loop cases, frozen runs, evidence verdicts and HTML reports. Component benches stay independent. See [agent eval](docs/agent-eval.md). |
 | `server`, `websocket`, `gateway/*` | Compatibility bindings for application construction |
 
 This module imports the standalone public Agent module

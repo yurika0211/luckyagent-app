@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Eval</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --fg: #1b1d21;
+  --bg: #f7f6f2;
+  --muted: #5c6370;
+  --line: #c9c4b8;
+  --panel: #fffdf8;
+  --ok-fg: #0b7a32; --ok-bg: #d4f5de;
+  --bad-fg: #8c1d18; --bad-bg: #fadad7;
+  --skip-fg: #8a5a00; --skip-bg: #ffe9c2;
+  --unk-fg: #334155; --unk-bg: #e4e6ea;
+  --accent: #1f4b8f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fg: #e8e4d9; --bg: #16181d; --muted: #a8a396; --line: #3a3d45; --panel: #1e2128;
+    --ok-fg: #6ee7a0; --ok-bg: #0f3d24;
+    --bad-fg: #ff8a80; --bad-bg: #4a1c18;
+    --skip-fg: #ffcc66; --skip-bg: #3d2e12;
+    --unk-fg: #c5c9d1; --unk-bg: #2a2e36;
+    --accent: #8ab4ff;
+  }
+}
+:root[data-theme="dark"] {
+  --fg: #e8e4d9; --bg: #16181d; --muted: #a8a396; --line: #3a3d45; --panel: #1e2128;
+  --ok-fg: #6ee7a0; --ok-bg: #0f3d24;
+  --bad-fg: #ff8a80; --bad-bg: #4a1c18;
+  --skip-fg: #ffcc66; --skip-bg: #3d2e12;
+  --unk-fg: #c5c9d1; --unk-bg: #2a2e36;
+  --accent: #8ab4ff;
+}
+* { box-sizing: border-box; }
+html, body { max-width: 100%; overflow-x: hidden; }
+body { margin: 0; color: var(--fg); background: var(--bg); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+header { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; align-items: end; flex-wrap: wrap; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 16px; margin: 18px 0 8px; }
+h3 { font-size: 15px; margin: 16px 0 6px; }
+.muted { color: var(--muted); font-size: 12px; }
+nav { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button, .tab { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.tab.active, button.primary { border-color: var(--accent); color: var(--accent); }
+.layout { display: grid; grid-template-columns: minmax(0, 280px) minmax(0, 1fr); min-height: calc(100vh - 118px); }
+aside { border-right: 1px solid var(--line); padding: 12px; min-width: 0; }
+main { padding: 16px 16px 48px; min-width: 0; }
+.view { display: none; }
+.view.active { display: block; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 16px; }
+.cards { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 20px; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; min-width: 96px; background: var(--panel); }
+.card b { display: block; font-size: 22px; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; }
+.ok { color: var(--ok-fg); background: var(--ok-bg); }
+.bad { color: var(--bad-fg); background: var(--bad-bg); }
+.skip { color: var(--skip-fg); background: var(--skip-bg); }
+.unknown { color: var(--unk-fg); background: var(--unk-bg); }
+.wrap { overflow-x: auto; max-width: 100%; }
+table { width: 100%; border-collapse: collapse; min-width: 520px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
+code, pre { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; overflow-wrap: anywhere; word-break: break-word; }
+pre, textarea, .blob { width: 100%; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--panel); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-height: 280px; overflow: auto; }
+textarea { min-height: 220px; resize: vertical; }
+.run { display: block; width: 100%; text-align: left; margin: 0 0 8px; overflow-wrap: anywhere; }
+.run.active { border-color: var(--accent); }
+.turn, .panel, .lane { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: var(--panel); min-width: 0; }
+.turn p, .panel p { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty { color: var(--muted); }
+label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+label.field input, label.field select { color: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); min-width: 0; max-width: 100%; }
+.checks { display: flex; gap: 6px; flex-wrap: wrap; }
+.lanes { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+#page-error { display: none; margin: 0 16px; }
+#page-error.show { display: block; }
+.loading { color: var(--muted); }
+@media (max-width: 800px) {
+  .layout { grid-template-columns: 1fr; }
+  aside { border-right: 0; border-bottom: 1px solid var(--line); }
+  header, nav, main { padding-left: 16px; padding-right: 16px; }
+  table { min-width: 0; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Agent Eval</h1>
+    <div class="muted" id="root">评测操作面。测试资产、执行证据、对照、人工复核分开。建档默认不启动。</div>
+  </div>
+  <div class="row">
+    <button id="refresh" type="button">刷新</button>
+  </div>
+</header>
+<nav>
+  <button class="tab active" type="button" data-view="assets">测试资产</button>
+  <button class="tab" type="button" data-view="runs">执行与证据</button>
+  <button class="tab" type="button" data-view="compare">对照</button>
+  <button class="tab" type="button" data-view="review">人工复核</button>
+</nav>
+<div id="page-error" class="panel bad"></div>
+<div id="assets" class="view active">
+  <main>
+    <p class="muted" id="schema-note">合同：input / expected / evaluation / wait。验证器 keyword、regex、trace、memory_write。多轮只允许 replay_abort、replay_resume、inject_abort。</p>
+    <div class="row">
+      <button id="validate" type="button">校验清单</button>
+      <button id="create" class="primary" type="button">建档（不启动）</button>
+    </div>
+    <div class="row">
+      <label class="field">profile
+        <select id="profile"><option value="chat">chat</option><option value="long_task">long_task</option></select>
+      </label>
+      <label class="field">workspace
+        <input id="workspace" value=".">
+      </label>
+      <label class="field">操作者
+        <input id="created-by" value="webui" autocomplete="off">
+      </label>
+    </div>
+    <textarea id="dataset" spellcheck="false" placeholder="粘贴 agent-eval/v1 的 cases JSON。旧 bench 字段和 inject_resume 会被拒绝。"></textarea>
+    <div id="asset-out"><p class="empty">先粘贴用例 JSON。校验失败会写在这里，不会只进控制台。</p></div>
+  </main>
+</div>
+<div id="runs" class="view">
+  <div class="layout">
+    <aside>
+      <div class="muted">Runs</div>
+      <div id="run-list"><p class="empty">还没有加载 run 列表。</p></div>
+    </aside>
+    <main id="detail"><p class="empty">选择一次 run，或先去测试资产建档。</p></main>
+  </div>
+</div>
+<div id="compare" class="view">
+  <main>
+    <div class="row">
+      <label class="field">本轮
+        <select id="cmp-run"></select>
+      </label>
+      <label class="field">基线
+        <select id="cmp-base"></select>
+      </label>
+      <button id="cmp-go" type="button">对照</button>
+      <a id="cmp-html" href="#">打开 HTML 报告</a>
+    </div>
+    <div id="cmp-out"><p class="empty">选择两次 run。新增失败、恢复、新增用例、消失用例分开列出，并标明 dataset sha 是否相同。</p></div>
+  </main>
+</div>
+<div id="review" class="view">
+  <main id="review-main"><p class="empty">先在执行与证据里选一次已跑完的 run。</p></main>
+</div>
+<script>
+const $ = sel => document.querySelector(sel);
+let runs = [];
+let selected = new URLSearchParams(location.search).get("run") || "";
+let current = null;
+let showAllAttempts = false;
+
+function cls(v) {
+  if (v === "pass" || v === "completed") return "ok";
+  if (v === "fail" || v === "failed") return "bad";
+  if (v === "skip") return "skip";
+  return "unknown";
+}
+function badge(v) {
+  return `<span class="badge ${cls(v)}">${esc(v || "—")}</span>`;
+}
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[ch]));
+}
+function blob(v) {
+  const text = String(v ?? "");
+  if (!text) return `<p class="empty">（空）</p>`;
+  return `<pre class="blob">${esc(text)}</pre>`;
+}
+function pageError(msg) {
+  const el = $("#page-error");
+  if (!msg) { el.classList.remove("show"); el.textContent = ""; return; }
+  el.textContent = msg;
+  el.classList.add("show");
+}
+function show(name) {
+  document.querySelectorAll(".view").forEach(el => el.classList.toggle("active", el.id === name));
+  document.querySelectorAll(".tab").forEach(el => el.classList.toggle("active", el.dataset.view === name));
+  if (name === "runs" && selected) loadDetail(selected);
+  if (name === "compare") fillCompareSelects();
+  if (name === "review") renderReviewPage();
+}
+document.querySelectorAll(".tab").forEach(btn => btn.onclick = () => show(btn.dataset.view));
+
+async function readError(res) {
+  const text = await res.text();
+  try {
+    const data = JSON.parse(text);
+    if (data && data.error) return data.error;
+    return text || res.statusText;
+  } catch {
+    return text || res.statusText;
+  }
+}
+
+async function loadSchema() {
+  try {
+    const res = await fetch("/api/schema");
+    if (!res.ok) {
+      $("#schema-note").textContent = "读取 schema 失败：" + await readError(res);
+      return;
+    }
+    const data = await res.json();
+    $("#schema-note").textContent = `合同 ${data.schema_version}：${(data.turn_contract || []).join(" / ")}。验证器 ${(data.validators || []).join("、")}。允许 ${(data.modes || []).join("、")}，禁止 ${data.forbidden_mode}。${data.note || ""}`;
+  } catch (err) {
+    $("#schema-note").textContent = "读取 schema 失败：" + err.message;
+  }
+}
+
+async function loadRuns() {
+  pageError("");
+  const list = $("#run-list");
+  list.innerHTML = `<p class="loading">正在加载 run 列表…</p>`;
+  try {
+    const res = await fetch("/api/runs");
+    if (!res.ok) {
+      const msg = await readError(res);
+      list.innerHTML = `<p class="bad">加载 run 列表失败：${esc(msg)}</p>`;
+      pageError("加载 run 列表失败：" + msg);
+      return;
+    }
+    const data = await res.json();
+    runs = data.runs || [];
+    $("#root").textContent = (data.root || "") + " · 建档默认不启动。真实 Agent 开跑走 la-eval CLI。";
+    if (!selected && runs[0]) selected = runs[0].run_id;
+    list.innerHTML = runs.map(run => `
+      <button class="run${run.run_id === selected ? " active" : ""}" data-run="${esc(run.run_id)}">
+        <code>${esc(run.run_id)}</code><br>
+        ${esc(run.dataset_name)} · ${esc(run.status)} · ${run.attempts || 0} attempts
+      </button>`).join("") || `<p class="empty">这个目录还没有 run。</p>`;
+    list.querySelectorAll("button").forEach(btn => btn.onclick = () => {
+      selected = btn.dataset.run;
+      history.replaceState(null, "", "?run=" + encodeURIComponent(selected));
+      loadRuns();
+      show("runs");
+    });
+    fillCompareSelects();
+  } catch (err) {
+    list.innerHTML = `<p class="bad">加载 run 列表失败：${esc(err.message)}</p>`;
+    pageError("加载 run 列表失败：" + err.message);
+  }
+}
+
+function fillCompareSelects() {
+  const opt = runs.map(run => `<option value="${esc(run.run_id)}">${esc(run.run_id)} · ${esc(run.status)}</option>`).join("") || `<option value="">没有可对照的 run</option>`;
+  $("#cmp-run").innerHTML = opt;
+  $("#cmp-base").innerHTML = opt;
+  if (selected) $("#cmp-run").value = selected;
+}
+
+async function validateDataset() {
+  const raw = $("#dataset").value.trim();
+  const out = $("#asset-out");
+  if (!raw) {
+    out.innerHTML = `<p class="bad">先粘贴用例 JSON。</p>`;
+    return null;
+  }
+  let body;
+  try { body = JSON.parse(raw); }
+  catch (err) {
+    out.innerHTML = `<p class="bad">JSON 解析失败：${esc(err.message)}</p>`;
+    return null;
+  }
+  out.innerHTML = `<p class="loading">正在校验…</p>`;
+  const res = await fetch("/api/datasets/validate", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch { data = {error: text}; }
+  if (!res.ok || !data.valid) {
+    out.innerHTML = `<p class="bad">校验失败：${esc(data.error || text || "未知原因")}</p>`;
+    return null;
+  }
+  out.innerHTML = `
+    <div class="cards">
+      <div class="card"><b>${data.cases.length}</b>cases</div>
+      <div class="card"><b>${esc(data.schema_version)}</b>schema</div>
+    </div>
+    <p class="muted">${esc(data.name)} · <code>${esc(data.dataset_sha256)}</code></p>
+    <p>${esc(data.description || "")}</p>
+    <div class="wrap"><table>
+      <tr><th>Case</th><th>覆盖</th><th>跑法</th><th>轮次</th><th>实际评测轮</th><th>验证器</th></tr>
+      ${data.cases.map(item => `<tr>
+        <td><code>${esc(item.id)}</code><br>${esc(item.title || "")}</td>
+        <td>${esc((item.coverage || []).join(", "))}</td>
+        <td>${esc(item.mode)} · ${esc(item.profile)}</td>
+        <td>${item.turns}${item.skip ? " · skip" : ""}</td>
+        <td>${esc((item.evaluated || []).map(n => n + 1).join(", "))}</td>
+        <td>${item.turn_views.map(turn => `第${turn.index}轮 ${turn.validators.length ? esc(turn.validators.join(", ")) : badge("skip")}`).join("<br>")}</td>
+      </tr>`).join("")}
+    </table></div>`;
+  return body;
+}
+
+$("#validate").onclick = () => validateDataset();
+$("#create").onclick = async () => {
+  const dataset = await validateDataset();
+  if (!dataset) return;
+  const res = await fetch("/api/runs", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      dataset,
+      profile: $("#profile").value,
+      workspace: $("#workspace").value,
+      created_by: $("#created-by").value,
+      start: false
+    })
+  });
+  const text = await res.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch { data = {error: text}; }
+  if (!res.ok) {
+    $("#asset-out").insertAdjacentHTML("afterbegin", `<p class="bad">建档失败：${esc(data.error || text)}</p>`);
+    return;
+  }
+  selected = data.run_id;
+  history.replaceState(null, "", "?run=" + encodeURIComponent(selected));
+  await loadRuns();
+  show("runs");
+};
+
+async function loadDetail(id) {
+  $("#detail").innerHTML = `<p class="loading">正在加载 ${esc(id)}…</p>`;
+  try {
+    const res = await fetch("/api/runs/" + encodeURIComponent(id));
+    if (!res.ok) {
+      const msg = await readError(res);
+      $("#detail").innerHTML = `<p class="bad">${res.status === 404 ? "run 不存在：" : "加载失败："}${esc(msg)}</p>`;
+      return;
+    }
+    current = await res.json();
+    renderDetail();
+    renderReviewPage();
+  } catch (err) {
+    $("#detail").innerHTML = `<p class="bad">加载失败：${esc(err.message)}</p>`;
+  }
+}
+
+function renderDetail() {
+  const run = current;
+  if (!run) return;
+  const counts = tally(run);
+  $("#detail").innerHTML = `
+    <h2><code>${esc(run.run_id)}</code> ${badge(run.status)}</h2>
+    <div class="muted">${esc(run.dataset_name)} · <code>${esc(run.dataset_sha256)}</code></div>
+    <div class="muted">profile ${esc(run.profile)} · workspace ${esc(run.workspace)} · 操作者 ${esc(run.created_by || "—")} · 冻结 ${esc(run.frozen_at || "")}</div>
+    <div class="lanes">
+      <div class="lane"><b>冻结清单</b><p class="muted">测试资产已冻结，改题不会改这次 run。</p><p>${(run.cases || []).length} cases</p></div>
+      <div class="lane"><b>执行</b><p>${badge("completed") } ${counts.completed} · ${badge("failed")} ${counts.failed} · ${badge("unknown")} ${counts.execUnknown}</p></div>
+      <div class="lane"><b>裁判原判</b><p>${badge("pass")} ${counts.autoPass} · ${badge("fail")} ${counts.autoFail} · ${badge("skip")} ${counts.autoSkip} · ${badge("unknown")} ${counts.autoUnknown}</p></div>
+      <div class="lane"><b>复核结论</b><p>${badge("pass")} ${counts.pass} · ${badge("fail")} ${counts.fail} · ${badge("skip")} ${counts.skip} · ${badge("unknown")} ${counts.unknown}</p><p class="muted">复核只写 reviews.json。</p></div>
+    </div>
+    ${renderStart(run)}
+    <div class="row">
+      <label><input id="all-attempts" type="checkbox"${showAllAttempts ? " checked" : ""}> 显示 JSONL 全部尝试</label>
+      <span class="muted">报告默认采用最新一条。</span>
+      <a href="/api/runs/${encodeURIComponent(run.run_id)}/report">打开 HTML 报告</a>
+    </div>
+    ${(run.cases || []).map(renderCase).join("") || `<p class="empty">冻结清单里没有用例。</p>`}`;
+  const box = $("#all-attempts");
+  if (box) box.onchange = () => { showAllAttempts = box.checked; renderDetail(); };
+  const start = $("#start-run");
+  if (start) start.onclick = startRun;
+}
+
+function tally(run) {
+  const counts = {pass: 0, fail: 0, skip: 0, unknown: 0, autoPass: 0, autoFail: 0, autoSkip: 0, autoUnknown: 0, completed: 0, failed: 0, execUnknown: 0};
+  for (const item of run.cases || []) {
+    const latest = (item.attempts || []).find(a => a.latest);
+    const auto = item.auto_verdict || (latest ? latest.original_verdict || latest.verdict : "unknown");
+    const final = item.final_verdict || (item.review ? item.review.verdict : auto);
+    const exec = item.execution || (latest ? latest.execution : "unknown");
+    counts[final] = (counts[final] || 0) + 1;
+    if (auto === "pass") counts.autoPass++;
+    else if (auto === "fail") counts.autoFail++;
+    else if (auto === "skip") counts.autoSkip++;
+    else counts.autoUnknown++;
+    if (exec === "completed") counts.completed++;
+    else if (exec === "failed") counts.failed++;
+    else counts.execUnknown++;
+  }
+  return counts;
+}
+
+function renderStart(run) {
+  if (run.status !== "created") {
+    return `<p class="muted">这次 run 已经 ${esc(run.status)}。改题后请新建 run，旧清单不会被替换。</p>`;
+  }
+  return `<div class="panel">
+    <h3>显式开跑</h3>
+    <p>建档没有执行任何用例。这里只接受 scripted 回放。真实 Agent loop 用 <code>la-eval start -executor agent</code>。</p>
+    <div class="row">
+      <label class="field">scripted 证据文件
+        <input id="script-path" placeholder="/absolute/path/scripted-turns.json">
+      </label>
+      <label><input id="confirm-start" type="checkbox"> 确认现在执行冻结清单</label>
+      <button id="start-run" class="primary" type="button">开跑</button>
+    </div>
+    <div id="start-out"></div>
+  </div>`;
+}
+
+function renderCase(item) {
+  const attempts = item.attempts || [];
+  const latest = attempts.find(a => a.latest) || attempts[0];
+  const shown = showAllAttempts ? attempts : (latest ? [latest] : []);
+  const finalVerdict = item.final_verdict || (item.review ? item.review.verdict : (latest ? latest.verdict : "unknown"));
+  const autoVerdict = item.auto_verdict || (latest ? (latest.original_verdict || latest.verdict) : "unknown");
+  return `<section>
+    <h3>${esc(item.title || item.id)}</h3>
+    <div class="muted"><code>${esc(item.id)}</code> · ${esc((item.coverage || []).join(", "))} · ${esc(item.mode)} · ${esc(item.profile)}</div>
+    <p>执行 ${badge(item.execution || (latest && latest.execution) || "unknown")} · 原判 ${badge(autoVerdict)} · 最终 ${badge(finalVerdict)}${item.reviewed ? " · 已复核" : ""}</p>
+    ${item.review ? `<p>人工复核：${badge(item.review.verdict)}，原判 ${badge(item.review.original_verdict)}。${esc(item.review.reviewer || "")}：${esc(item.review.note)}</p>` : ""}
+    <details>
+      <summary>冻结清单 ${item.turns} 轮</summary>
+      ${(item.frozen || []).map(turn => `<div class="turn">
+        <div>第 ${turn.index} 轮 · 验证器 ${turn.validators && turn.validators.length ? esc(turn.validators.join(", ")) : "未配置 → skip"}</div>
+        <p><b>输入</b></p>${blob(turn.input)}
+        ${turn.expected ? `<p><b>期望</b></p>${blob(turn.expected)}` : `<p class="empty">没有 expected，不参与判定。</p>`}
+        ${turn.wait ? `<p class="muted">wait ${esc(turn.wait)}</p>` : ""}
+      </div>`).join("")}
+    </details>
+    ${shown.length ? shown.map(renderAttempt).join("") : `<p class="empty">还没有尝试。清单已冻结，等待显式 start。没有 attempts 不是失败，只是尚未执行。</p>`}
+  </section>`;
+}
+
+function renderAttempt(attempt) {
+  const addendumNote = attempt.addendum
+    ? (attempt.addendum_delivered ? "补写已送到后续轮" : "补写未送到后续轮")
+    : "无补写";
+  return `<div class="panel">
+    <div>attempt ${attempt.attempt} ${attempt.adopted_by_report || attempt.latest ? "· 报告采用" : "· JSONL 历史"} ${badge(attempt.execution)} 原判 ${badge(attempt.original_verdict || attempt.verdict)} 最终 ${badge(attempt.verdict)} · ${esc(attempt.mode)} · ${addendumNote}</div>
+    ${attempt.reason ? `<p>原因：${esc(attempt.reason)}</p>` : ""}
+    ${(attempt.turns || []).map(renderTurn).join("")}
+  </div>`;
+}
+
+function renderTurn(turn) {
+  const checks = (turn.checks || []).map(c => `${badge(c.status)} ${esc(c.validator)}${c.reason ? " · " + esc(c.reason) : ""}`).join(" ");
+  const tools = (turn.tools || []).map(tool => `<li><code>${esc(tool.name)}</code>${tool.failed ? " failed" : ""}${tool.arguments ? blob(tool.arguments) : ""}${tool.result ? blob(tool.result) : ""}</li>`).join("");
+  const writes = (turn.memory_writes || []).map(w => `<li><code>${esc(w.tool)}</code> ${w.ok ? "ok" : "not ok"}${blob(w.content || "")}</li>`).join("");
+  return `<div class="turn">
+    <div>第 ${turn.index} 轮 执行 ${badge(turn.execution)} 判定 ${badge(turn.verdict)}</div>
+    <p><b>输入</b></p>${blob(turn.input)}
+    ${turn.expected ? `<p><b>期望</b></p>${blob(turn.expected)}` : `<p class="empty">没有 expected。</p>`}
+    ${turn.addendum ? `<p><b>补写</b> ${turn.addendum_delivered ? badge("pass") + " 已送到本轮输入" : badge("fail") + " 未送到本轮"}</p>${blob(turn.addendum)}` : `<p class="muted">本轮没有补写前缀。</p>`}
+    <p><b>回复</b></p>${blob(turn.response || "（无回复证据）")}
+    <p class="muted">trace ${turn.trace_available ? "已观察" : "未观察"} · response ${turn.response_available ? "已观察" : "未观察"} · ${turn.duration_ms || 0} ms</p>
+    ${tools ? `<p><b>工具名和参数</b></p><ul>${tools}</ul>` : `<p class="muted">没有工具证据。</p>`}
+    ${writes ? `<p><b>记忆写入</b></p><ul>${writes}</ul>` : `<p class="muted">没有记忆写入证据。</p>`}
+    ${turn.memory_dump ? `<p><b>记忆快照</b></p>${blob(turn.memory_dump)}` : ""}
+    <div class="checks">${checks || `<span class="muted">没有验证器结果。</span>`}</div>
+    ${turn.reason ? `<p>${esc(turn.reason)}</p>` : ""}
+  </div>`;
+}
+
+function renderReviewPage() {
+  const host = $("#review-main");
+  if (!current) {
+    host.innerHTML = `<p class="empty">先在执行与证据里选一次 run。</p>`;
+    return;
+  }
+  const run = current;
+  if (!run.attempts) {
+    host.innerHTML = `<p class="empty">这次 run 还没有 attempts，不能复核。请先显式开跑。</p>`;
+    return;
+  }
+  const options = (run.cases || []).filter(item => (item.attempts || []).length).map(item =>
+    `<option value="${esc(item.id)}">${esc(item.id)} · 原判 ${esc(item.auto_verdict || "")} · 最终 ${esc(item.final_verdict || "")}</option>`).join("");
+  if (!options) {
+    host.innerHTML = `<p class="empty">没有可复核的 case。</p>`;
+    return;
+  }
+  host.innerHTML = `
+    <h2>人工复核 <code>${esc(run.run_id)}</code></h2>
+    <p class="muted">改最终结论，不改 attempts.jsonl。报告同时保留原判和复核。</p>
+    <div class="row">
+      <label class="field">case
+        <select id="review-case">${options}</select>
+      </label>
+      <label class="field">最终结论
+        <select id="review-verdict">
+          <option value="pass">pass</option>
+          <option value="fail">fail</option>
+          <option value="skip">skip</option>
+          <option value="unknown">unknown</option>
+        </select>
+      </label>
+      <label class="field">复核人
+        <input id="reviewer" value="webui">
+      </label>
+    </div>
+    <textarea id="review-note" placeholder="备注必填：为什么改最终结论"></textarea>
+    <button id="save-review" type="button">保存复核</button>
+    <div id="review-out"></div>
+    ${(run.cases || []).filter(c => c.review).map(c => `<p>${esc(c.id)}：最终 ${badge(c.review.verdict)}，原判 ${badge(c.review.original_verdict)}。${esc(c.review.note)}</p>`).join("")}`;
+  $("#save-review").onclick = saveReview;
+}
+
+async function startRun() {
+  const out = $("#start-out");
+  if (!$("#confirm-start").checked) {
+    out.innerHTML = `<p class="bad">未勾选确认。页面本身不会开跑。</p>`;
+    return;
+  }
+  const script = $("#script-path").value.trim();
+  if (!script) {
+    out.innerHTML = `<p class="bad">脚本路径为空。WebUI 只接受 scripted 回放文件。</p>`;
+    return;
+  }
+  out.innerHTML = `<p class="loading">正在开跑…</p>`;
+  const res = await fetch("/api/runs/" + encodeURIComponent(current.run_id) + "/start", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      executor: "scripted",
+      script,
+      confirm: true
+    })
+  });
+  const text = await res.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch { data = {error: text}; }
+  if (!res.ok) {
+    out.innerHTML = `<p class="bad">开跑失败：${esc(data.error || text)}</p>`;
+    return;
+  }
+  await loadRuns();
+  await loadDetail(current.run_id);
+}
+
+async function saveReview() {
+  const note = $("#review-note").value.trim();
+  if (!note) {
+    $("#review-out").innerHTML = `<p class="bad">复核必须有备注。</p>`;
+    return;
+  }
+  const res = await fetch("/api/runs/" + encodeURIComponent(current.run_id) + "/reviews", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      case_id: $("#review-case").value,
+      verdict: $("#review-verdict").value,
+      note,
+      reviewer: $("#reviewer").value
+    })
+  });
+  const text = await res.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch { data = {error: text}; }
+  if (!res.ok) {
+    $("#review-out").innerHTML = `<p class="bad">保存复核失败：${esc(data.error || text)}</p>`;
+    return;
+  }
+  await loadDetail(current.run_id);
+  show("review");
+}
+
+$("#cmp-go").onclick = async () => {
+  const run = $("#cmp-run").value;
+  const base = $("#cmp-base").value;
+  const out = $("#cmp-out");
+  if (!run || !base) {
+    out.innerHTML = `<p class="bad">先选本轮和基线 run。</p>`;
+    return;
+  }
+  if (run === base) {
+    out.innerHTML = `<p class="bad">选两个不同的 run。</p>`;
+    return;
+  }
+  $("#cmp-html").href = "/api/runs/" + encodeURIComponent(run) + "/report?compare=" + encodeURIComponent(base);
+  out.innerHTML = `<p class="loading">正在对照…</p>`;
+  const res = await fetch("/api/compare?run=" + encodeURIComponent(run) + "&base=" + encodeURIComponent(base));
+  if (!res.ok) {
+    out.innerHTML = `<p class="bad">对照失败：${esc(await readError(res))}</p>`;
+    return;
+  }
+  const rep = await res.json();
+  const cmp = rep.compare || {};
+  const same = cmp.same_dataset ? "两次 run 的 dataset sha 相同" : "两次 run 的 dataset sha 不同（清单已改，新增/消失用例可能来自改题）";
+  out.innerHTML = `
+    <p>${esc(same)}</p>
+    <p class="muted">本轮 <code>${esc(cmp.new_dataset_sha256 || rep.dataset_sha256 || "")}</code> · 基线 <code>${esc(cmp.base_dataset_sha256 || "")}</code> · JSONL ${rep.attempts} 条，表内是最新一条。</p>
+    <h3>新增失败 (${(cmp.new_failures || []).length})</h3>
+    ${renderDelta(cmp.new_failures)}
+    <h3>恢复 (${(cmp.recoveries || []).length})</h3>
+    ${renderDelta(cmp.recoveries)}
+    <h3>新增用例 (${(cmp.added_cases || []).length})</h3>
+    ${(cmp.added_cases || []).length ? `<p>${cmp.added_cases.map(item => `<code>${esc(item.case_id)}</code>`).join(", ")}</p>` : `<p class="empty">无新增用例。</p>`}
+    <h3>消失用例 (${(cmp.removed_case_ids || []).length})</h3>
+    ${(cmp.removed_case_ids || []).length ? `<p>${cmp.removed_case_ids.map(id => `<code>${esc(id)}</code>`).join(", ")}</p>` : `<p class="empty">无消失用例。</p>`}`;
+};
+
+function renderDelta(items) {
+  if (!items || !items.length) return `<p class="empty">无。</p>`;
+  return `<div class="wrap"><table><tr><th>Case</th><th>基线</th><th>本轮 execution</th><th>本轮 verdict</th><th>原因</th></tr>
+    ${items.map(item => `<tr><td><code>${esc(item.case_id)}</code><br>${esc(item.title || "")}</td><td>${badge(item.base_verdict)}</td><td>${badge(item.new_execution)}</td><td>${badge(item.new_verdict)}</td><td>${esc(item.new_reason)}</td></tr>`).join("")}
+    </table></div>`;
+}
+
+$("#refresh").onclick = async () => {
+  await loadRuns();
+  if (selected && $("#runs").classList.contains("active")) await loadDetail(selected);
+};
+loadSchema();
+loadRuns().then(() => { if (selected) show("runs"); });
+</script>
+</body>
+</html>
