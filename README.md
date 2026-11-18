@@ -53,8 +53,9 @@ defer instance.Close()
 answer, err := instance.Chat(ctx, "hello")
 ```
 
-For explicit resource injection use the public Agent module's
-`NewWithDependencies`; for default application preparation use `bootstrap.New`.
+For explicit resource injection, pass configuration, provider, sessions and tools
+to the public Agent module's `NewWithInputs`. Use `bootstrap.New` to prepare and
+start the full set of configured application services.
 See [the SDK guide](sdk/README.md) for the full embedding API.
 
 See [runtime request and recovery options](docs/runtime-options.md) for the
