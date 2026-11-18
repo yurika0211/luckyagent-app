@@ -16,6 +16,7 @@ import (
 
 	"github.com/yurika0211/lucky-agent/agent"
 	"github.com/yurika0211/luckyagent-runtime/config"
+	"github.com/yurika0211/luckyagent-runtime/session"
 	"github.com/yurika0211/luckyagent-runtime/tool"
 	"github.com/yurika0211/luckyagent-tools/collab"
 	taskstore "github.com/yurika0211/luckyagent-tools/task"
@@ -680,13 +681,23 @@ func TestHandleTasksAPI(t *testing.T) {
 	}
 }
 
+// A long, repetitive diagnostic log has room for a useful local summary.
+func seedCompactAPIHistory(sess *session.Session) {
+	var report strings.Builder
+	report.WriteString("Summarize these health checks and record the outcome.\n")
+	for i := 1; i <= 48; i++ {
+		fmt.Fprintf(&report, "Health check %d: the service responded within the timeout and the queue was empty.\n", i)
+	}
+	sess.AddMessage("user", report.String())
+	sess.AddMessage("assistant", "All 48 health checks completed without errors.")
+}
+
 func TestHandleSessionCompactDryRun(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())
 
 	sess := a.Sessions().Ensure("compact-api-dry")
-	sess.AddMessage("user", "Fix internal/agent/context_planner.go and keep compact API dry-run safe.")
-	sess.AddToolMessage("terminal", "go test ./internal/server will verify dry-run compact behavior")
+	seedCompactAPIHistory(sess)
 	before := sess.MessageCount()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/compact-api-dry/compact", bytes.NewReader([]byte(`{"dry_run":true,"force_local":true}`)))
@@ -699,11 +710,16 @@ func TestHandleSessionCompactDryRun(t *testing.T) {
 	if got := sess.MessageCount(); got != before {
 		t.Fatalf("dry-run must not append boundary: got %d messages, want %d", got, before)
 	}
-	var resp map[string]any
+	var resp struct {
+		DryRun            bool   `json:"dry_run"`
+		SummarySource     string `json:"summary_source"`
+		PreTokenEstimate  int    `json:"pre_token_estimate"`
+		PostTokenEstimate int    `json:"post_token_estimate"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["dry_run"] != true || resp["summary_source"] != "local" {
+	if !resp.DryRun || resp.SummarySource != "local" || resp.PostTokenEstimate <= 0 || resp.PostTokenEstimate >= resp.PreTokenEstimate {
 		t.Fatalf("unexpected compact response: %+v", resp)
 	}
 }
@@ -713,8 +729,7 @@ func TestHandleSessionCompactLatestTrace(t *testing.T) {
 	s := New(a, DefaultServerConfig())
 
 	sess := a.Sessions().Ensure("compact-api-write")
-	sess.AddMessage("user", "Fix internal/agent/context_planner.go and expose compact API trace.")
-	sess.AddToolMessage("terminal", "go test ./internal/server should pass for compact API trace")
+	seedCompactAPIHistory(sess)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/compact-api-write/compact", bytes.NewReader([]byte(`{"force_local":true}`)))
 	w := httptest.NewRecorder()
@@ -739,6 +754,31 @@ func TestHandleSessionCompactLatestTrace(t *testing.T) {
 	}
 	if trace["summary_source"] != "local" || trace["dropped_messages"] != float64(2) {
 		t.Fatalf("unexpected compact trace: %+v", trace)
+	}
+}
+
+func TestHandleSessionCompactNoBenefit(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	sess := a.Sessions().Ensure("compact-api-tiny")
+	sess.AddMessage("user", "Say hello.")
+	sess.AddMessage("assistant", "Hello.")
+	before := sess.MessageCount()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/compact-api-tiny/compact", strings.NewReader(`{"force_local":true}`))
+	s.handleSessionByID(w, req)
+	var response struct {
+		Details string `json:"details"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusBadRequest || !strings.Contains(response.Details, agent.ErrCompactNoBenefit.Error()) {
+		t.Fatalf("expected no-benefit rejection, got %d: %s", w.Code, response.Details)
+	}
+	if _, ok := sess.LatestCompactTrace(); ok || sess.MessageCount() != before {
+		t.Fatal("no-benefit compact changed the session history")
 	}
 }
 

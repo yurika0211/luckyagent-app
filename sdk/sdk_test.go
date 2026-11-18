@@ -442,7 +442,9 @@ func TestCompactSessionForceLocal(t *testing.T) {
 	if !ok || sess == nil {
 		t.Fatalf("session %s missing", sid)
 	}
-	sess.AddMessage("user", "Please summarize the long debugging session about context compaction.")
+	// Give the local summary enough repeated history to reduce the request.
+	sess.AddMessage("user", "Please summarize the debugging session.\n"+
+		strings.Repeat("Repeated check: the worker is running, the queue is empty, and all health checks passed.\n", 48))
 	sess.AddMessage("assistant", "I inspected CompactSession options and prepared a local fallback summary path.")
 	sess.AddToolMessage("terminal", "go test ./sdk failed before force-local compact coverage existed")
 
