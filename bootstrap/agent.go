@@ -21,7 +21,8 @@ func NewWithMemory(cfg *config.Manager, injected *memory.Runtime) (*agent.Agent,
 	if err != nil {
 		return nil, err
 	}
-	instance, err := agent.NewWithDependencies(agent.Options{TakeOwnership: true}, components)
+	inputs := agent.InputsFromComponents(components)
+	instance, err := agent.NewWithInputs(agent.Options{TakeOwnership: true}, inputs)
 	if err != nil {
 		_ = components.Close()
 		return nil, err

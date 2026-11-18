@@ -74,25 +74,45 @@ func grpcNetworkClient(t *testing.T, service *Server, options ...GRPCServerOptio
 	return NewLuckyAgentServiceClient(conn)
 }
 
-func TestGRPCChatPersistsAndContinuesSessionWithActualUsage(t *testing.T) {
-	var calls atomic.Int32
-	var secondHadHistory atomic.Bool
-	s, _ := grpcProviderFixture(t, func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Messages []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"messages"`
-		}
+type grpcCompletionRequest struct {
+	Messages []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"messages"`
+}
+
+// The model can receive plain JSON classification and recap requests alongside
+// the user turn. Only the latter participates in the streaming handshake.
+func grpcUserTurnFixture(t *testing.T, respond func(http.ResponseWriter, *http.Request, grpcCompletionRequest)) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req grpcCompletionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Error(err)
 			return
 		}
-		if len(req.Messages) > 0 && strings.HasPrefix(req.Messages[0].Content, "Write exactly one concise sentence to help the user recall") {
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"You asked a question."}}]}`)
-			return
+		if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+			var answer string
+			switch prompt := req.Messages[0].Content; {
+			case strings.HasPrefix(prompt, "Classify the user's request into exactly one profile"):
+				answer = `{"profile":"chat"}`
+			case strings.HasPrefix(prompt, "Write exactly one concise sentence to help the user recall"):
+				answer = "You asked a question."
+			}
+			if answer != "" {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%q}}]}`, answer)
+				return
+			}
 		}
+		respond(w, r, req)
+	}
+}
+
+func TestGRPCChatPersistsAndContinuesSessionWithActualUsage(t *testing.T) {
+	var calls atomic.Int32
+	var secondHadHistory atomic.Bool
+	s, _ := grpcProviderFixture(t, grpcUserTurnFixture(t, func(w http.ResponseWriter, _ *http.Request, req grpcCompletionRequest) {
 		if calls.Add(1) == 2 {
 			for _, message := range req.Messages {
 				if message.Role == "assistant" && message.Content == "first answer" {
@@ -106,7 +126,7 @@ func TestGRPCChatPersistsAndContinuesSessionWithActualUsage(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}],"usage":{"prompt_tokens":7,"completion_tokens":6,"total_tokens":13}}`, answer)
-	})
+	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	first, err := s.Chat(ctx, &ChatRequest{Message: "hello"})
@@ -225,7 +245,7 @@ func TestGRPCChatStreamSendsChineseBeforeGenerationFinishes(t *testing.T) {
 	first := strings.Repeat("中", 50)
 	release := make(chan struct{})
 	defer close(release)
-	s, _ := grpcProviderFixture(t, func(w http.ResponseWriter, r *http.Request) {
+	s, _ := grpcProviderFixture(t, grpcUserTurnFixture(t, func(w http.ResponseWriter, r *http.Request, _ grpcCompletionRequest) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":%q}}]}\n\n", first)
 		w.(http.Flusher).Flush()
@@ -235,7 +255,7 @@ func TestGRPCChatStreamSendsChineseBeforeGenerationFinishes(t *testing.T) {
 			return
 		}
 		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"后续\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
-	})
+	}))
 	client := grpcNetworkClient(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -277,13 +297,13 @@ func TestGRPCChatStreamSendsChineseBeforeGenerationFinishes(t *testing.T) {
 
 func TestGRPCChatStreamCancellationReachesProvider(t *testing.T) {
 	cancelled := make(chan struct{})
-	s, _ := grpcProviderFixture(t, func(w http.ResponseWriter, r *http.Request) {
+	s, _ := grpcProviderFixture(t, grpcUserTurnFixture(t, func(w http.ResponseWriter, r *http.Request, _ grpcCompletionRequest) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"开始\"}}]}\n\n")
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
 		close(cancelled)
-	})
+	}))
 	client := grpcNetworkClient(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
