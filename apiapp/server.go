@@ -1259,7 +1259,11 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			s.wsHandler.CancelSession(sess.ID)
 		}
 		s.cancelChat(sess.ID)
-		s.agent.CancelSession(sess.ID)
+		if deleter, ok := any(s.agent).(interface{ DeleteSession(string) bool }); ok {
+			deleter.DeleteSession(sess.ID)
+		} else {
+			s.agent.CancelSession(sess.ID)
+		}
 		s.sendJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
 		return
 	case http.MethodGet:
