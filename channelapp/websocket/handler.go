@@ -38,6 +38,10 @@ type runtimeConfigProvider interface {
 	Config() *config.Manager
 }
 
+type taskRelationPlanner interface {
+	PlanTaskRelation(context.Context, []string, string) (agent.TaskRelationPlan, error)
+}
+
 type progressFeedbackRuntime interface {
 	ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error)
 }
@@ -47,6 +51,9 @@ type queuedRun struct {
 	parentID string
 	data     ChatData
 	resume   bool
+	// parallel is set only after the main model's dependency decision. It lets
+	// independent same-session work overlap while ordinary turns remain FIFO.
+	parallel bool
 	// awaitResume is set only for work discovered after a process restart. It
 	// remains visible and queryable, but a reconnect or a new chat cannot start
 	// it without an explicit ResumeSession call.
@@ -61,10 +68,29 @@ type queuedRun struct {
 }
 
 type sessionRunner struct {
-	queue     []*queuedRun
-	active    *queuedRun
-	cancel    context.CancelFunc
-	cancelled bool
+	queue         []*queuedRun
+	active        *queuedRun
+	cancel        context.CancelFunc
+	cancelled     bool
+	activeRuns    map[string]*queuedRun
+	cancels       map[string]context.CancelFunc
+	cancelledRuns map[string]bool
+}
+
+func ensureRunnerMaps(runner *sessionRunner) {
+	if runner.activeRuns == nil {
+		runner.activeRuns = make(map[string]*queuedRun)
+	}
+	if runner.cancels == nil {
+		runner.cancels = make(map[string]context.CancelFunc)
+	}
+	if runner.cancelledRuns == nil {
+		runner.cancelledRuns = make(map[string]bool)
+	}
+}
+
+func runnerHasActive(runner *sessionRunner) bool {
+	return runner != nil && (runner.active != nil || len(runner.activeRuns) > 0)
 }
 
 type clientReplayLock struct {
@@ -111,6 +137,46 @@ func (h *AgentHandler) SetEventSink(sink func(string, *Message)) {
 	h.mu.Lock()
 	h.eventSink = sink
 	h.mu.Unlock()
+}
+
+func (h *AgentHandler) taskCanRunParallel(sessionID, next string) bool {
+	h.mu.Lock()
+	runner := h.runners[sessionID]
+	var active []string
+	if runner != nil {
+		seen := map[string]struct{}{}
+		add := func(run *queuedRun) {
+			if run == nil {
+				return
+			}
+			text := strings.TrimSpace(run.data.Message)
+			if text == "" {
+				return
+			}
+			if _, ok := seen[text]; ok {
+				return
+			}
+			seen[text] = struct{}{}
+			active = append(active, text)
+		}
+		add(runner.active)
+		for _, run := range runner.activeRuns {
+			add(run)
+		}
+		for _, run := range runner.queue {
+			add(run)
+		}
+	}
+	h.mu.Unlock()
+	if len(active) == 0 {
+		return true
+	}
+	// The application runner keeps a conservative FIFO default. A host that
+	// explicitly opts into model planning can wrap this handler with the
+	// taskRelationPlanner contract; ordinary websocket traffic must not spend a
+	// second provider call merely to admit a queued message.
+	_ = next
+	return false
 }
 
 // staleRunTTL is how long a queued or running websocket checkpoint may sit
@@ -190,6 +256,55 @@ func (h *AgentHandler) ResumeSession(sessionID, runID string) bool {
 		h.startNext(sessionID)
 	}
 	return resumed
+}
+
+// EnqueueBackgroundTaskResult hands a completed background delegate back to
+// the main model in its owning session. The stable handoff id makes repeated
+// task events and reconnects idempotent; the ordinary session runner keeps the
+// handoff behind a user reply that is already in progress.
+func (h *AgentHandler) EnqueueBackgroundTaskResult(sessionID, taskID, description, result string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	taskID = strings.TrimSpace(taskID)
+	if h == nil || h.agent == nil || sessionID == "" || taskID == "" {
+		return false
+	}
+	runID := "handoff-" + taskID
+	message := fmt.Sprintf("A background delegated task has reached a terminal state. Review its evidence in the original session and report the result; do not claim success without checking failures or missing deliverables.\nTask: %s\nResult:\n%s", strings.TrimSpace(description), trimRunMessage(result, 12000))
+	run := &queuedRun{id: runID, parentID: taskID, data: ChatData{Message: message, Stream: true}, resume: false}
+	if sessions := h.agent.Sessions(); sessions != nil {
+		run.session, _ = sessions.Get(sessionID)
+		if run.session == nil {
+			run.session = sessions.Ensure(sessionID)
+		}
+	}
+	stored, created, err := h.store.CreateRun(persistedRun{
+		ID: runID, SessionID: sessionID, ParentID: taskID, Message: message,
+		Stream: true, State: "queued", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil || !created {
+		return created && stored.ID == runID
+	}
+	h.mu.Lock()
+	runner := h.runners[sessionID]
+	if runner == nil {
+		runner = &sessionRunner{}
+		h.runners[sessionID] = runner
+	}
+	runner.queue = append(runner.queue, run)
+	wasBusy := runnerHasActive(runner)
+	h.mu.Unlock()
+	if !wasBusy {
+		h.startNext(sessionID)
+	}
+	return true
+}
+
+func trimRunMessage(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "\n[truncated]"
 }
 
 func runIsStale(run persistedRun, now time.Time, ttl time.Duration) bool {
@@ -579,13 +694,14 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 	if run.session == nil && h.agent.Sessions() != nil {
 		run.session = h.agent.Sessions().Ensure(client.SessionID)
 	}
+	run.parallel = h.taskCanRunParallel(client.SessionID, data.Message)
 	h.mu.Lock()
 	runner := h.runners[client.SessionID]
 	if runner == nil {
 		runner = &sessionRunner{}
 		h.runners[client.SessionID] = runner
 	}
-	wasBusy := runner.active != nil
+	wasBusy := runner.active != nil || len(runner.activeRuns) > 0
 	if !wasBusy {
 		for _, queued := range runner.queue {
 			if !queued.awaitResume {
@@ -636,13 +752,15 @@ func (h *AgentHandler) collectLuckyChat(client *Client, msg *Message, data ChatD
 func (h *AgentHandler) startNext(sessionID string) {
 	h.mu.Lock()
 	runner := h.runners[sessionID]
-	if runner == nil || runner.active != nil || len(runner.queue) == 0 {
+	if runner == nil || len(runner.queue) == 0 {
 		h.mu.Unlock()
 		return
 	}
+	ensureRunnerMaps(runner)
+	busy := runnerHasActive(runner)
 	index := -1
 	for i, candidate := range runner.queue {
-		if !candidate.awaitResume {
+		if !candidate.awaitResume && (!busy || candidate.parallel) {
 			index = i
 			break
 		}
@@ -653,11 +771,16 @@ func (h *AgentHandler) startNext(sessionID string) {
 	}
 	run := runner.queue[index]
 	runner.queue = append(runner.queue[:index], runner.queue[index+1:]...)
-	runner.active = run
 	ctx, cancel := context.WithCancel(context.Background())
-	runner.cancel = cancel
-	runner.cancelled = false
-	h.pending[sessionID] = cancel
+	runner.activeRuns[run.id] = run
+	runner.cancels[run.id] = cancel
+	runner.cancelledRuns[run.id] = false
+	if !busy {
+		runner.active = run
+		runner.cancel = cancel
+		runner.cancelled = false
+		h.pending[sessionID] = cancel
+	}
 	if h.done[sessionID] == nil {
 		h.done[sessionID] = make(chan struct{})
 	}
@@ -690,11 +813,16 @@ func (h *AgentHandler) startNext(sessionID string) {
 func (h *AgentHandler) finishRun(sessionID string, run *queuedRun, err error) {
 	h.mu.Lock()
 	runner := h.runners[sessionID]
-	if runner == nil || runner.active != run {
+	if runner == nil {
 		h.mu.Unlock()
 		return
 	}
-	wasCancelled := runner.cancelled
+	ensureRunnerMaps(runner)
+	if _, ok := runner.activeRuns[run.id]; !ok && runner.active != run {
+		h.mu.Unlock()
+		return
+	}
+	wasCancelled := runner.cancelledRuns[run.id] || (runner.active == run && runner.cancelled)
 	persistErr := run.persistErr
 	h.mu.Unlock()
 	state := "completed"
@@ -713,11 +841,24 @@ func (h *AgentHandler) finishRun(sessionID string, run *queuedRun, err error) {
 		h.emit(run.client, sessionID, run.id, terminalStatus(sessionID, run.parentID, run.id, state))
 	}
 	h.mu.Lock()
-	runner.active = nil
-	runner.cancel = nil
-	runner.cancelled = false
-	delete(h.pending, sessionID)
-	if len(runner.queue) == 0 {
+	ensureRunnerMaps(runner)
+	delete(runner.activeRuns, run.id)
+	delete(runner.cancels, run.id)
+	delete(runner.cancelledRuns, run.id)
+	if runner.active == run {
+		runner.active = nil
+		runner.cancel = nil
+		runner.cancelled = false
+		for _, remaining := range runner.activeRuns {
+			runner.active = remaining
+			runner.cancel = runner.cancels[remaining.id]
+			break
+		}
+	}
+	if !runnerHasActive(runner) {
+		delete(h.pending, sessionID)
+	}
+	if len(runner.queue) == 0 && !runnerHasActive(runner) {
 		if done := h.done[sessionID]; done != nil {
 			close(done)
 			delete(h.done, sessionID)
@@ -736,6 +877,9 @@ func (h *AgentHandler) runLocked(sessionID, runID string) *queuedRun {
 	if runner := h.runners[sessionID]; runner != nil {
 		if runner.active != nil && runner.active.id == runID {
 			return runner.active
+		}
+		if run := runner.activeRuns[runID]; run != nil {
+			return run
 		}
 		for _, run := range runner.queue {
 			if run.id == runID {
@@ -764,8 +908,13 @@ func (h *AgentHandler) failPersistence(client *Client, sessionID, runID, parentI
 			return
 		}
 		run.persistErr = err
-		if runner := h.runners[sessionID]; runner.active == run {
-			cancel = runner.cancel
+		if runner := h.runners[sessionID]; runner != nil {
+			if runner.cancels != nil {
+				cancel = runner.cancels[run.id]
+			}
+			if cancel == nil && runner.active == run {
+				cancel = runner.cancel
+			}
 		}
 	}
 	sink := h.eventSink
@@ -1577,30 +1726,42 @@ func (h *AgentHandler) CancelSession(sessionID string) {
 func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 	h.mu.Lock()
 	runner := h.runners[sessionID]
-	var cancel context.CancelFunc
+	var cancels []context.CancelFunc
 	var queued []*queuedRun
 	var cancelled []*queuedRun
 	if runner != nil {
+		ensureRunnerMaps(runner)
 		runner.cancelled = true
 		if runner.active != nil {
 			cancelled = append(cancelled, runner.active)
 		}
-		cancel = runner.cancel
+		for id, active := range runner.activeRuns {
+			if active != runner.active {
+				cancelled = append(cancelled, active)
+			}
+			runner.cancelledRuns[id] = true
+			if cancel := runner.cancels[id]; cancel != nil {
+				cancels = append(cancels, cancel)
+			}
+		}
+		if runner.cancel != nil {
+			cancels = append(cancels, runner.cancel)
+		}
 		queued = append(queued, runner.queue...)
 		runner.queue = nil
-		if runner.active == nil {
+		if !runnerHasActive(runner) {
 			if done := h.done[sessionID]; done != nil {
 				close(done)
 				delete(h.done, sessionID)
 			}
 		}
 	}
-	if cancel == nil {
-		cancel = h.pending[sessionID]
+	if cancel := h.pending[sessionID]; cancel != nil {
+		cancels = append(cancels, cancel)
 	}
 	delete(h.pending, sessionID)
 	h.mu.Unlock()
-	if cancel != nil {
+	for _, cancel := range cancels {
 		cancel()
 	}
 	for _, run := range queued {
@@ -1616,7 +1777,16 @@ func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 func (h *AgentHandler) PendingCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.pending)
+	count := len(h.pending)
+	for sessionID, runner := range h.runners {
+		if _, ok := h.pending[sessionID]; ok {
+			continue
+		}
+		if runner != nil {
+			count += len(runner.activeRuns)
+		}
+	}
+	return count
 }
 
 // WaitSession waits for the handler goroutine to exit after cancellation.

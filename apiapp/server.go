@@ -200,6 +200,14 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		if store, ok := a.TaskStore().(*taskstore.FileStore); ok {
 			store.Observe(func(event taskstore.Event) {
 				broadcastTaskEvent(wsHub, event)
+				if isTerminalTaskEvent(event.Type) {
+					if record, found, err := store.Get(event.TaskID); err == nil && found && isBackgroundDelegateRecord(record) {
+						result, _, resultErr := store.Result(record.ID)
+						if resultErr == nil {
+							wsHandler.EnqueueBackgroundTaskResult(record.ParentSessionID, record.ID, record.Description, result)
+						}
+					}
+				}
 			})
 		}
 		a.SetSessionEventSink(func(sessionID, content string) {
@@ -251,6 +259,19 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		telemetryStop:   telemetryStop,
 		pairing:         newPairingStore(),
 	}
+}
+
+func isTerminalTaskEvent(kind taskstore.EventType) bool {
+	switch kind {
+	case taskstore.EventCompleted, taskstore.EventFailed, taskstore.EventCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func isBackgroundDelegateRecord(record taskstore.Record) bool {
+	return strings.Contains(record.Input, "\x00background_delegate") && strings.TrimSpace(record.ParentSessionID) != ""
 }
 
 func broadcastTaskEvent(hub *websocket.Hub, event taskstore.Event) {
@@ -1148,6 +1169,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			Format         string     `json:"format,omitempty"`
 			CreatedAt      string     `json:"created_at"`
 			UpdatedAt      string     `json:"updated_at"`
+			ActiveTasks    int        `json:"active_tasks,omitempty"`
+			UnreadTasks    int        `json:"unread_tasks,omitempty"`
+			HasUnreadTasks bool       `json:"has_unread_tasks,omitempty"`
 		}
 
 		total := len(sessions)
@@ -1156,6 +1180,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		page := sessions[start:end]
 		infos := make([]sessionInfo, 0, len(page))
 		for _, sess := range page {
+			_, taskSummary, err := s.sessionTasks(sess.ID)
+			if err != nil {
+				s.sendError(w, "list session tasks failed", http.StatusInternalServerError, err.Error())
+				return
+			}
 			infos = append(infos, sessionInfo{
 				ID:             sess.ID,
 				Title:          sess.Title,
@@ -1169,6 +1198,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				Format:         sess.Format,
 				CreatedAt:      sess.CreatedAt.Format(time.RFC3339),
 				UpdatedAt:      sess.UpdatedAt.Format(time.RFC3339),
+				ActiveTasks:    taskSummary.Active,
+				UnreadTasks:    taskSummary.Unread,
+				HasUnreadTasks: taskSummary.Unread > 0,
 			})
 		}
 
@@ -1546,6 +1578,14 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 			"task_id":    strings.TrimSpace(req.TaskID),
 			"resumed":    true,
 		})
+		return
+	}
+	if len(parts) == 1 && parts[0] == "tasks" {
+		s.handleSessionTasks(w, r, sess.ID)
+		return
+	}
+	if len(parts) == 2 && parts[0] == "tasks" && parts[1] == "read" {
+		s.markSessionTasksRead(w, r, sess.ID)
 		return
 	}
 	if len(parts) == 1 && parts[0] == "activity" {
