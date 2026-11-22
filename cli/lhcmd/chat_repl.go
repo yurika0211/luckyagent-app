@@ -174,7 +174,7 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 		fmt.Println("  /quit, /exit       退出")
 		fmt.Println("  /help              显示帮助")
 		fmt.Println("  /yolo              切换自动批准工具调用")
-		fmt.Println("  /set dev|iso|status 切换执行模式")
+		fmt.Println("  /set dev|workspace-write|iso|status 切换执行模式")
 		fmt.Println("  /model [kind] [name]  查看或切换指定类型模型")
 		fmt.Println("  /models [kind]     列出模型（可按类型过滤）")
 		fmt.Println("  /soul              显示当前 SOUL")

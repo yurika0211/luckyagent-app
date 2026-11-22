@@ -755,7 +755,7 @@ func (h *Handler) handleVersion(ctx context.Context, msg *gateway.Message) error
 func (h *Handler) handleSetSandbox(ctx context.Context, msg *gateway.Message) error {
 	mode := strings.ToLower(strings.TrimSpace(msg.Args))
 	if mode == "" || mode == "status" {
-		return h.reply(ctx, msg, fmt.Sprintf("当前沙箱模式：%s\n用法：/set dev 或 /set iso", h.agent.SandboxMode()))
+		return h.reply(ctx, msg, fmt.Sprintf("当前沙箱模式：%s\n模式：dev=主机，workspace-write=当前会话目录 bwrap，iso=复制后丢弃\n用法：/set dev|workspace-write|iso|status", h.agent.SandboxMode()))
 	}
 	if err := h.agent.SetSandboxMode(mode); err != nil {
 		return h.reply(ctx, msg, "❌ "+err.Error())

@@ -3492,7 +3492,7 @@ func (h *Handler) handleSetSandbox(ctx context.Context, msg *gateway.Message) er
 	}
 	mode := strings.ToLower(strings.TrimSpace(msg.Args))
 	if mode == "" || mode == "status" {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("当前沙箱模式：%s\n用法：/set dev 或 /set iso", runtime.SandboxMode()))
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("当前沙箱模式：%s\n模式：dev=主机，workspace-write=当前会话目录 bwrap，iso=复制后丢弃\n用法：/set dev|workspace-write|iso|status", runtime.SandboxMode()))
 	}
 	if err := runtime.SetSandboxMode(mode); err != nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ "+err.Error())

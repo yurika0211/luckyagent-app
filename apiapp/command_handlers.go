@@ -34,7 +34,7 @@ func webCommandSpecs() []commandSpec {
 		{Name: "help", Usage: "/help", Description: "List available commands", Group: "basic"},
 		{Name: "version", Usage: "/version", Description: "Show runtime version", Group: "system"},
 		{Name: "status", Usage: "/status", Description: "Show runtime status", Group: "system"},
-		{Name: "set", Usage: "/set <dev|iso|status>", Description: "Switch the global execution mode", Group: "system"},
+		{Name: "set", Usage: "/set <dev|workspace-write|iso|status>", Description: "Switch the global execution mode", Group: "system"},
 		{Name: "health", Usage: "/health", Description: "System health check", Group: "system"},
 		{Name: "metrics", Usage: "/metrics", Description: "Show usage metrics", Group: "system"},
 		{Name: "tools", Usage: "/tools [all]", Description: "List available tools", Group: "system"},
@@ -148,7 +148,7 @@ func (s *Server) runCommand(ctx context.Context, name, args, sessionID string) (
 	case "set":
 		mode := strings.ToLower(strings.TrimSpace(args))
 		if mode == "" || mode == "status" {
-			return fmt.Sprintf("Sandbox mode: `%s`\n\nUse `/set dev` for direct project development or `/set iso` for an isolated temporary copy.", a.SandboxMode()), nil
+			return fmt.Sprintf("Sandbox mode: `%s`\n\nModes: `dev` = host, `workspace-write` = bwrap on the session directory, `iso` = copy and discard.\nUse `/set dev|workspace-write|iso|status`.", a.SandboxMode()), nil
 		}
 		if err := a.SetSandboxMode(mode); err != nil {
 			return "", err
