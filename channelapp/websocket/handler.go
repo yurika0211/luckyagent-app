@@ -171,12 +171,17 @@ func (h *AgentHandler) taskCanRunParallel(sessionID, next string) bool {
 	if len(active) == 0 {
 		return true
 	}
-	// The application runner keeps a conservative FIFO default. A host that
-	// explicitly opts into model planning can wrap this handler with the
-	// taskRelationPlanner contract; ordinary websocket traffic must not spend a
-	// second provider call merely to admit a queued message.
-	_ = next
-	return false
+	// Admission stays local and side-effect free. Explicit dependency language
+	// waits; otherwise independent work may overlap. Hosts that have a model
+	// planner can replace this decision through taskRelationPlanner without
+	// adding a second provider call to ordinary queue admission.
+	lower := strings.ToLower(strings.TrimSpace(next))
+	for _, marker := range []string{"after", "depends", "based on", "依赖", "基于", "先完成", "must not", "deleted", "cancel"} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 // staleRunTTL is how long a queued or running websocket checkpoint may sit
