@@ -1259,7 +1259,11 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			s.wsHandler.CancelSession(sess.ID)
 		}
 		s.cancelChat(sess.ID)
-		s.agent.CancelSession(sess.ID)
+		if deleter, ok := any(s.agent).(interface{ DeleteSession(string) bool }); ok {
+			deleter.DeleteSession(sess.ID)
+		} else {
+			s.agent.CancelSession(sess.ID)
+		}
 		s.sendJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
 		return
 	case http.MethodGet:
@@ -1517,6 +1521,33 @@ func sessionStorageStatus(err error) int {
 }
 
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request, sess *session.Session, parts []string) {
+	if len(parts) == 1 && parts[0] == "resume" {
+		if r.Method != http.MethodPost {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		if s.wsHandler == nil {
+			s.sendError(w, "websocket task recovery is unavailable", http.StatusServiceUnavailable, "")
+			return
+		}
+		var req struct {
+			TaskID string `json:"task_id,omitempty"`
+		}
+		if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+		if !s.wsHandler.ResumeSession(sess.ID, req.TaskID) {
+			s.sendError(w, "no restart-recovered task is waiting for explicit resume", http.StatusConflict, sess.ID)
+			return
+		}
+		s.sendJSON(w, http.StatusAccepted, map[string]any{
+			"session_id": sess.ID,
+			"task_id":    strings.TrimSpace(req.TaskID),
+			"resumed":    true,
+		})
+		return
+	}
 	if len(parts) == 1 && parts[0] == "activity" {
 		s.handleSessionActivity(w, r, sess.ID)
 		return
