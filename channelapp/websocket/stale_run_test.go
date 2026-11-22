@@ -114,6 +114,9 @@ func TestStartRestoresFreshRunningRun(t *testing.T) {
 	}
 
 	h.Start()
+	if !h.ResumeSession("fresh-session", "fresh-run") {
+		t.Fatal("explicit resume did not release fresh running run")
+	}
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):

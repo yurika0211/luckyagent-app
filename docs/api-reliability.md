@@ -105,3 +105,14 @@ handler tests also use isolated watch directories. Run each module's race suite
 and vet, then validate the launcher against published dependency versions with
 `GOWORK=off`. Slow-client replay, duplicate request IDs, input conflicts, unknown
 sessions, failed/partial/cancelled streams and shutdown are regression cases.
+
+### Restarted WebSocket tasks wait for explicit resume
+
+After the application restores a queued or running WebSocket task from its durable
+checkpoint, it keeps that task visible but does not start another model/tool
+round. Reconnects, polling, and replaying the original request do not authorize
+execution. An authorized client explicitly resumes one task with
+`POST /api/v1/sessions/{session_id}/resume` and an optional `{ "task_id": "..." }`
+body. The endpoint returns `202` when a recovered task is released and `409`
+when no task is waiting. New messages may run while an old recovered task waits;
+the recovered task keeps its original run id and session binding.

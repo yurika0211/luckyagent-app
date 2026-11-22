@@ -176,6 +176,9 @@ func TestHandlerStartRestoresPersistedRunOnlyOnce(t *testing.T) {
 
 	h.Start()
 	h.Start()
+	if !h.ResumeSession("restore-session", "restore-once") {
+		t.Fatal("explicit resume did not release restored run")
+	}
 	h.WaitSession("restore-session", 2*time.Second)
 
 	select {

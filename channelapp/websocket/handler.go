@@ -47,7 +47,11 @@ type queuedRun struct {
 	parentID string
 	data     ChatData
 	resume   bool
-	client   *Client
+	// awaitResume is set only for work discovered after a process restart. It
+	// remains visible and queryable, but a reconnect or a new chat cannot start
+	// it without an explicit ResumeSession call.
+	awaitResume bool
+	client      *Client
 	// Bind an accepted turn to its original handle. A deleted session ID may
 	// later be reused, but queued work must not create or adopt that new session.
 	session *session.Session
@@ -137,7 +141,7 @@ func (h *AgentHandler) Start() {
 			ProfileID:   persisted.ProfileID,
 			Attachments: persisted.Attachments,
 		}
-		run := &queuedRun{id: persisted.ID, parentID: persisted.ParentID, data: data}
+		run := &queuedRun{id: persisted.ID, parentID: persisted.ParentID, data: data, awaitResume: true}
 		if h.agent != nil && h.agent.Sessions() != nil {
 			run.session = h.agent.Sessions().Ensure(persisted.SessionID)
 		}
@@ -155,9 +159,37 @@ func (h *AgentHandler) Start() {
 		runner.queue = append(runner.queue, run)
 		h.mu.Unlock()
 	}
-	for sessionID := range h.runners {
+}
+
+// ResumeSession explicitly releases one restart-recovered run for execution.
+// It is intentionally separate from Start and reconnect handling so polling or
+// resubmitting the original request cannot authorize another provider call.
+func (h *AgentHandler) ResumeSession(sessionID, runID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	if sessionID == "" {
+		return false
+	}
+	h.mu.Lock()
+	runner := h.runners[sessionID]
+	if runner == nil {
+		h.mu.Unlock()
+		return false
+	}
+	resumed := false
+	for _, run := range runner.queue {
+		if !run.awaitResume || (runID != "" && run.id != runID) {
+			continue
+		}
+		run.awaitResume = false
+		resumed = true
+		break
+	}
+	h.mu.Unlock()
+	if resumed {
 		h.startNext(sessionID)
 	}
+	return resumed
 }
 
 func runIsStale(run persistedRun, now time.Time, ttl time.Duration) bool {
@@ -553,7 +585,15 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 		runner = &sessionRunner{}
 		h.runners[client.SessionID] = runner
 	}
-	wasBusy := runner.active != nil || len(runner.queue) > 0
+	wasBusy := runner.active != nil
+	if !wasBusy {
+		for _, queued := range runner.queue {
+			if !queued.awaitResume {
+				wasBusy = true
+				break
+			}
+		}
+	}
 	runner.queue = append(runner.queue, run)
 	h.mu.Unlock()
 	queued, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
@@ -600,8 +640,19 @@ func (h *AgentHandler) startNext(sessionID string) {
 		h.mu.Unlock()
 		return
 	}
-	run := runner.queue[0]
-	runner.queue = runner.queue[1:]
+	index := -1
+	for i, candidate := range runner.queue {
+		if !candidate.awaitResume {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		h.mu.Unlock()
+		return
+	}
+	run := runner.queue[index]
+	runner.queue = append(runner.queue[:index], runner.queue[index+1:]...)
 	runner.active = run
 	ctx, cancel := context.WithCancel(context.Background())
 	runner.cancel = cancel
