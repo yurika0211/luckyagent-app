@@ -129,11 +129,12 @@ func TestHandleAgentsDelegate(t *testing.T) {
 	}
 
 	body := map[string]any{
-		"mode":        "parallel",
-		"description": "test task",
-		"input":       "hello",
-		"agent_ids":   []string{"agent-1"},
-		"timeout":     10,
+		"mode":              "parallel",
+		"description":       "test task",
+		"input":             "hello",
+		"agent_ids":         []string{"agent-1"},
+		"parent_session_id": "session-test",
+		"timeout":           10,
 	}
 	bodyBytes, _ := json.Marshal(body)
 
