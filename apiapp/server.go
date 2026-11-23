@@ -95,6 +95,10 @@ type Server struct {
 	telemetryOn    bool
 	telemetryStop  func(context.Context) error
 
+	// Client performance diagnostics use a separate SQLite database so raw
+	// samples do not share locks or retention with sessions, credentials, or RAG.
+	perfDiagnostics *perfDiagnosticsStore
+
 	// QR pairing keys live only in this process. A restart drops them.
 	pairing *pairingStore
 }
@@ -238,7 +242,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 
 	telemetryOn, telemetryStop := setupTelemetryFromEnv()
 
-	return &Server{
+	server := &Server{
 		agent:       a,
 		mcpAdmin:    a.MCPAdmin(),
 		config:      cfg,
@@ -259,6 +263,15 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		telemetryStop:   telemetryStop,
 		pairing:         newPairingStore(),
 	}
+	if a != nil {
+		store, err := openPerfDiagnosticsStore(a.Config().HomeDir())
+		if err != nil {
+			logger.Warn("performance diagnostics storage unavailable", "error", err)
+		} else {
+			server.perfDiagnostics = store
+		}
+	}
+	return server
 }
 
 func isTerminalTaskEvent(kind taskstore.EventType) bool {
@@ -442,6 +455,7 @@ func (s *Server) Start() error {
 		Root:                 s.handleRoot,
 	})
 	mux.HandleFunc("/api/v1/mcp/servers", s.handleMCPServers)
+	mux.HandleFunc("/api/v1/diagnostics/perf", s.handlePerfDiagnostics)
 	s.registerPluginManagementRoutes(mux)
 
 	var handler http.Handler = mux
@@ -538,6 +552,12 @@ func (s *Server) Stop() error {
 		s.wsHub.Stop()
 	}
 	if !running || httpServer == nil {
+		if s.perfDiagnostics != nil {
+			if err := s.perfDiagnostics.close(); err != nil && gatewayErr == nil {
+				gatewayErr = err
+			}
+			s.perfDiagnostics = nil
+		}
 		return gatewayErr
 	}
 
@@ -553,6 +573,12 @@ func (s *Server) Stop() error {
 		if err := s.telemetryStop(ctx); err != nil {
 			logger.Warn("telemetry shutdown failed", "error", err)
 		}
+	}
+	if s.perfDiagnostics != nil {
+		if err := s.perfDiagnostics.close(); err != nil && gatewayErr == nil {
+			gatewayErr = err
+		}
+		s.perfDiagnostics = nil
 	}
 
 	s.mu.Lock()
