@@ -6,6 +6,7 @@ require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/json-iterator/go v1.1.12
+	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
@@ -26,7 +27,6 @@ require (
 	github.com/jezek/xgb v1.3.1 // indirect
 	github.com/larksuite/oapi-sdk-go/v3 v3.11.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-sqlite3 v1.14.42 // indirect
 	github.com/yuin/goldmark v1.3.5 // indirect
 	github.com/yurika0211/aestus v0.1.1-0.20261031163709-5ea8b187b6af // indirect
 	github.com/yurika0211/luckyagent-orchestrator v0.1.3 // indirect
