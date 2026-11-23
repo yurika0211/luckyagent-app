@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,9 +21,10 @@ import (
 )
 
 const (
-	perfDiagnosticsDBName    = "perf.db"
-	perfDiagnosticsRetention = 7 * 24 * time.Hour
-	perfDiagnosticsBodyLimit = 16 << 20
+	perfDiagnosticsDBName           = "perf.db"
+	perfDiagnosticsRetention        = 7 * 24 * time.Hour
+	perfDiagnosticsBodyLimit        = 16 << 20
+	perfDiagnosticsRetentionDaysEnv = "LUCKYAGENT_PERF_DIAGNOSTICS_RETENTION_DAYS"
 )
 
 type perfDiagnosticsUpload struct {
@@ -47,8 +49,21 @@ type perfDiagnosticsUploadResponse struct {
 }
 
 type perfDiagnosticsStore struct {
-	db   *sql.DB
-	path string
+	db        *sql.DB
+	path      string
+	retention time.Duration
+}
+
+func configuredPerfDiagnosticsRetention() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(perfDiagnosticsRetentionDaysEnv))
+	if raw == "" {
+		return perfDiagnosticsRetention
+	}
+	days, err := strconv.Atoi(raw)
+	if err != nil || days < 1 || days > 3650 {
+		return perfDiagnosticsRetention
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 func openPerfDiagnosticsStore(homeDir string) (*perfDiagnosticsStore, error) {
@@ -65,7 +80,7 @@ func openPerfDiagnosticsStore(homeDir string) (*perfDiagnosticsStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open diagnostics sqlite: %w", err)
 	}
-	store := &perfDiagnosticsStore{db: db, path: path}
+	store := &perfDiagnosticsStore{db: db, path: path, retention: configuredPerfDiagnosticsRetention()}
 	if err := store.initialize(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -156,7 +171,7 @@ func (s *perfDiagnosticsStore) putBatch(req perfDiagnosticsUpload, now time.Time
 	}()
 
 	created := now.UTC().Format(time.RFC3339Nano)
-	expires := now.Add(perfDiagnosticsRetention).UTC().Format(time.RFC3339Nano)
+	expires := now.Add(s.retention).UTC().Format(time.RFC3339Nano)
 	_, err = tx.Exec(`
 INSERT INTO captures (
     capture_id, endpoint_hash, session_hash, app_version, device_model,

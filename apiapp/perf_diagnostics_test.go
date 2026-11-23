@@ -63,6 +63,17 @@ func TestPerfDiagnosticsStoreIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestConfiguredPerfDiagnosticsRetention(t *testing.T) {
+	t.Setenv(perfDiagnosticsRetentionDaysEnv, "30")
+	if got := configuredPerfDiagnosticsRetention(); got != 30*24*time.Hour {
+		t.Fatalf("expected 30-day retention, got %s", got)
+	}
+	t.Setenv(perfDiagnosticsRetentionDaysEnv, "0")
+	if got := configuredPerfDiagnosticsRetention(); got != perfDiagnosticsRetention {
+		t.Fatalf("invalid retention should use default, got %s", got)
+	}
+}
+
 func TestHandlePerfDiagnosticsStoresCompressedPayload(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())
