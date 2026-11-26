@@ -108,6 +108,7 @@ type AgentHandler struct {
 	eventSink func(string, *Message)
 	lucky     *luckycollector.Lucky
 	uiTrees   map[string]map[string]uiTreeEntry
+	charts    *chartLifecycle
 	started   bool
 	replays   map[*Client]*clientReplayLock
 	mu        sync.Mutex
@@ -127,6 +128,7 @@ func NewAgentHandler(a agentRuntime) *AgentHandler {
 		store:   newRunStore(storeRoot),
 		lucky:   luckycollector.NewLucky(),
 		uiTrees: make(map[string]map[string]uiTreeEntry),
+		charts:  newChartLifecycle(),
 	}
 }
 

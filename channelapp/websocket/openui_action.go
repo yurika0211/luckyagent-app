@@ -27,7 +27,6 @@ func (h *AgentHandler) recordUIDelta(sessionID string, delta openui.Delta) {
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.uiTrees == nil {
 		h.uiTrees = make(map[string]map[string]uiTreeEntry)
 	}
@@ -41,7 +40,60 @@ func (h *AgentHandler) recordUIDelta(sessionID string, delta openui.Delta) {
 			delta = mergeUIDelta(previous.delta, delta)
 		}
 	}
-	trees[delta.TreeID] = uiTreeEntry{delta: cloneUIDelta(delta), updatedAt: time.Now()}
+	stored := cloneUIDelta(delta)
+	trees[delta.TreeID] = uiTreeEntry{delta: stored, updatedAt: time.Now()}
+	h.mu.Unlock()
+	h.rememberChartVersions(sessionID, stored)
+}
+
+func (h *AgentHandler) rememberChartVersions(sessionID string, delta openui.Delta) {
+	if h == nil || h.charts == nil {
+		return
+	}
+	for _, node := range delta.Nodes {
+		if !strings.EqualFold(strings.TrimSpace(node.Type), "Chart") || node.Props == nil {
+			continue
+		}
+		mode, _ := node.Props["mode"].(string)
+		mode = strings.ToLower(strings.TrimSpace(mode))
+		if mode != "data" && mode != "teaching" {
+			continue
+		}
+		chartID, _ := node.Props["chart_id"].(string)
+		chartID = strings.TrimSpace(chartID)
+		if chartID == "" {
+			chartID = strings.TrimSpace(node.ID)
+		}
+		version := chartVersion{ChartID: chartID, Mode: mode, SchemaVersion: 1, DataVersion: 1}
+		if n, ok := numberToInt(node.Props["schema_version"]); ok && n > 0 {
+			version.SchemaVersion = n
+		}
+		if n, ok := numberToInt64(node.Props["data_version"]); ok && n > 0 {
+			version.DataVersion = n
+		}
+		h.charts.rememberChart(sessionID, version)
+	}
+}
+
+func numberToInt(value any) (int, bool) {
+	n, ok := numberToInt64(value)
+	return int(n), ok && int64(int(n)) == n
+}
+
+func numberToInt64(value any) (int64, bool) {
+	switch n := value.(type) {
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	case float64:
+		return int64(n), n == float64(int64(n))
+	case json.Number:
+		v, err := n.Int64()
+		return v, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // handleUIAction turns a validated widget intent into an ordinary user turn.
@@ -76,6 +128,25 @@ func (h *AgentHandler) handleUIAction(client *Client, msg *Message) {
 	if err != nil {
 		h.sendUIActionError(client, msg, "UI_ACTION_REJECTED", err.Error())
 		return
+	}
+	wire, wireErr := chartWireFromMessage(msg)
+	if wireErr != nil {
+		h.sendUIActionError(client, msg, "INVALID_DATA", wireErr.Error())
+		return
+	}
+	if chartApply && wire.ChartID != "" {
+		if _, replay, err := h.charts.acceptApply(sessionID, wire); err != nil {
+			h.sendUIActionError(client, msg, "UI_ACTION_STALE", err.Error())
+			return
+		} else if replay {
+			status, _ := NewMessage(TypeStatus, sessionID, StatusData{
+				State:   "ui_action_replayed",
+				Message: "OpenUI chart action already applied",
+			})
+			status.ParentID = msg.ID
+			h.emit(client, sessionID, "", status)
+			return
+		}
 	}
 
 	status, _ := NewMessage(TypeStatus, sessionID, StatusData{
