@@ -134,6 +134,8 @@ github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261122193439-42057bfb4bc6 h1:
 github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261122193439-42057bfb4bc6/go.mod h1:CRgppgeMIjl5qiMO/5yA8h471oRRHGb1GhtgvBWOphg=
 github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261126202825-9352b4faa98c h1:+3rlqkbEOHMnyuSnEE+txsBmtJl2I2IYRfHeN5uGHsk=
 github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261126202825-9352b4faa98c/go.mod h1:I+SBZW5anyQN2E0BtR7h2Zl7+3MQx2GAIUlJ5pJ6uqw=
+github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261126205624-0f074132e9a1 h1:Zwz4FgIqoxIdaciyQiTKrUhTs2lipLGdCR8v+48vpyA=
+github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261126205624-0f074132e9a1/go.mod h1:XHomrmNYzoRr7NrOdH59y6u5c7UZqZEc3wbyqK9GM7I=
 github.com/yurika0211/luckyagent-api v0.2.6-0.20261126175521-30bec2c5c740 h1:WlnZNgnKSUd2olhqVtq28y05CPjoPZ+QfSkbPs3en+Q=
 github.com/yurika0211/luckyagent-api v0.2.6-0.20261126175521-30bec2c5c740/go.mod h1:auKwSvWrCAzckvc1IMmTjjNsOkZpJP2BhUk51WkIMeY=
 github.com/yurika0211/luckyagent-api v0.2.6-0.20261126195125-a950a46a5bdc h1:Rf6H5gfRSmgONfwWos1Z0T2gDJPVoiZ+yDIQcCEYWm4=
