@@ -19,8 +19,13 @@ func TestChartApplyRejectsStaleVersionAndRepeatsOnce(t *testing.T) {
 	}
 
 	again, replay, err := life.acceptApply("s1", wire)
-	if err != nil || !replay || again.ChildTurn != "turn-1" || again.DataVersion != 5 {
+	if err != nil || !replay || again.ChildTurn != "turn-1" || again.DataVersion != 4 {
 		t.Fatalf("repeat=%#v replay=%v err=%v", again, replay, err)
+	}
+	life.rememberChart("s1", chartVersion{ChartID: "c1", SchemaVersion: 2, DataVersion: 5, Mode: "teaching"})
+	again, replay, err = life.acceptApply("s1", wire)
+	if err != nil || !replay || again.DataVersion != 5 {
+		t.Fatalf("committed repeat=%#v replay=%v err=%v", again, replay, err)
 	}
 
 	stale := wire
@@ -68,8 +73,13 @@ func TestChartLifecyclePersistsVersionsAndIdempotency(t *testing.T) {
 
 	reloaded := newChartLifecycle(filepath.Join(root, "charts"))
 	result, replay, err := reloaded.acceptApply("session", wire)
-	if err != nil || !replay || result.ChildTurn != "turn" || result.DataVersion != 4 {
+	if err != nil || !replay || result.ChildTurn != "turn" || result.DataVersion != 3 {
 		t.Fatalf("replayed=%#v replay=%v err=%v", result, replay, err)
+	}
+	reloaded.rememberChart("session", chartVersion{ChartID: "c", SchemaVersion: 1, DataVersion: 4, Mode: "teaching"})
+	result, replay, err = reloaded.acceptApply("session", wire)
+	if err != nil || !replay || result.DataVersion != 4 {
+		t.Fatalf("committed replay=%#v replay=%v err=%v", result, replay, err)
 	}
 	stale := wire
 	stale.ActionID = "new"
