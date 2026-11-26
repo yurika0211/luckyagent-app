@@ -11,9 +11,9 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
-	github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261122193439-42057bfb4bc6
+	github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261126202210-2647d43239f0
 	github.com/yurika0211/luckyagent-plugins v0.1.0
-	github.com/yurika0211/luckyagent-runtime v0.3.4-0.20261126175517-0e54c7042b85
+	github.com/yurika0211/luckyagent-runtime v0.3.4-0.20261126200308-e3500a1acd15
 	golang.org/x/term v0.41.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
