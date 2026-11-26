@@ -1,6 +1,9 @@
 package websocket
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestChartApplyRejectsStaleVersionAndRepeatsOnce(t *testing.T) {
 	life := newChartLifecycle()
@@ -11,7 +14,9 @@ func TestChartApplyRejectsStaleVersionAndRepeatsOnce(t *testing.T) {
 	if err != nil || replay || first.ActionID != "a1" {
 		t.Fatalf("first=%#v replay=%v err=%v", first, replay, err)
 	}
-	life.commitApply("s1", "turn-1", wire)
+	if _, err := life.commitApply("s1", "turn-1", wire); err != nil {
+		t.Fatal(err)
+	}
 
 	again, replay, err := life.acceptApply("s1", wire)
 	if err != nil || !replay || again.ChildTurn != "turn-1" || again.DataVersion != 5 {
@@ -46,5 +51,29 @@ func TestChartWireIgnoresLegacyAction(t *testing.T) {
 	life := newChartLifecycle()
 	if _, replay, err := life.acceptApply("s", wire); err != nil || replay {
 		t.Fatalf("legacy should pass through, replay=%v err=%v", replay, err)
+	}
+}
+
+func TestChartLifecyclePersistsVersionsAndIdempotency(t *testing.T) {
+	root := t.TempDir()
+	life := newChartLifecycle(filepath.Join(root, "charts"))
+	life.rememberChart("session", chartVersion{ChartID: "c", SchemaVersion: 1, DataVersion: 3, Mode: "teaching"})
+	wire := chartWireAction{ActionID: "a", ChartID: "c", SchemaVersion: 1, DataVersion: 3, Operation: "apply"}
+	if _, _, err := life.acceptApply("session", wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := life.commitApply("session", "turn", wire); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := newChartLifecycle(filepath.Join(root, "charts"))
+	result, replay, err := reloaded.acceptApply("session", wire)
+	if err != nil || !replay || result.ChildTurn != "turn" || result.DataVersion != 4 {
+		t.Fatalf("replayed=%#v replay=%v err=%v", result, replay, err)
+	}
+	stale := wire
+	stale.ActionID = "new"
+	if _, _, err := reloaded.acceptApply("session", stale); err == nil {
+		t.Fatal("stale action was accepted after reload")
 	}
 }

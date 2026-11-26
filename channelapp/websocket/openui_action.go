@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yurika0211/luckyagent-runtime/logger"
 	"github.com/yurika0211/luckyagent-runtime/openui"
 )
 
@@ -71,7 +72,9 @@ func (h *AgentHandler) rememberChartVersions(sessionID string, delta openui.Delt
 		if n, ok := numberToInt64(node.Props["data_version"]); ok && n > 0 {
 			version.DataVersion = n
 		}
-		h.charts.rememberChart(sessionID, version)
+		if err := h.charts.rememberChart(sessionID, version); err != nil {
+			logger.Warn("persist OpenUI chart version failed", "session_id", sessionID, "chart_id", version.ChartID, "error", err)
+		}
 	}
 }
 
@@ -166,6 +169,18 @@ func (h *AgentHandler) handleUIAction(client *Client, msg *Message) {
 		}),
 	}
 	h.handleChat(client, chat)
+	// handleChat durably admits the child run before returning. Record the
+	// action only after that admission so a storage failure does not consume
+	// an action id that the client can no longer retry.
+	if chartApply && wire.ChartID != "" {
+		if _, ok, err := h.store.GetRun(sessionID, msg.ID); err != nil {
+			logger.Warn("read OpenUI chart child run failed", "session_id", sessionID, "action_id", wire.ActionID, "error", err)
+		} else if ok {
+			if _, err := h.charts.commitApply(sessionID, msg.ID, wire); err != nil {
+				logger.Warn("persist OpenUI chart action failed", "session_id", sessionID, "action_id", wire.ActionID, "error", err)
+			}
+		}
+	}
 }
 
 func (h *AgentHandler) sendUIActionError(client *Client, msg *Message, code, message string) {

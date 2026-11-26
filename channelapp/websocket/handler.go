@@ -120,6 +120,10 @@ func NewAgentHandler(a agentRuntime) *AgentHandler {
 	if provider, ok := a.(runtimeConfigProvider); ok && provider.Config() != nil {
 		storeRoot = filepath.Join(provider.Config().HomeDir(), "runtime", "websocket")
 	}
+	chartRoot := ""
+	if storeRoot != "" {
+		chartRoot = filepath.Join(storeRoot, "charts")
+	}
 	return &AgentHandler{
 		agent:   a,
 		pending: make(map[string]context.CancelFunc),
@@ -128,7 +132,7 @@ func NewAgentHandler(a agentRuntime) *AgentHandler {
 		store:   newRunStore(storeRoot),
 		lucky:   luckycollector.NewLucky(),
 		uiTrees: make(map[string]map[string]uiTreeEntry),
-		charts:  newChartLifecycle(),
+		charts:  newChartLifecycle(chartRoot),
 	}
 }
 
