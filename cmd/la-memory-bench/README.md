@@ -116,14 +116,30 @@ Each `round` record contains:
 - route signals for route scenario: `risk_flags`, `required_tools`
 - run status: `clean`, `quality_pass`
 
-Each `summary` record aggregates one scenario. A clean synthetic run means:
+Each `summary` record aggregates one scenario. `gate_failures` lists every
+assertion that broke, naming both the measured value and the threshold, so a
+red run explains itself. A clean synthetic run means:
 
 ```text
 errors == 0
-forbid_hit_count <= --max-stale-hits
-avg recall on quality candidate records >= --min-recall
-avg noise on quality candidate records <= --max-noise
-route risk/tool recall, when present, also meets --min-recall
+forbid_hits == 0
+avg recall >= --min-recall
+avg noise <= --max-noise
+tidal only: tidal_on mrr >= --min-recall and stale_rate_delta <= 0
+```
+
+**Control arms are measured, not graded.** `graph_off` and `tidal_off` are the
+deliberate baselines the experimental arm has to beat, so their noise and
+forbidden hits never fail the gate. Everything else is graded. Consequently
+`avg_noise_at_k` (all records, for reporting) and `gate_noise_at_k` (control
+arms excluded, what the gate actually checks) can differ; the gate uses the
+latter.
+
+With `--enforce-gate` (default `true`), any failed scenario makes the process
+exit non-zero, so the bench can be wired into CI:
+
+```bash
+lh-memory-bench -scenario all || echo "quality gate failed"
 ```
 
 Defaults are intentionally lenient for early experiments:

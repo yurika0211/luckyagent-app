@@ -33,6 +33,7 @@ type benchConfig struct {
 	MaxNoise       float64
 	MaxStaleHits   int
 	RealDatasetTag string
+	EnforceGate    bool
 }
 
 type benchRecord struct {
@@ -90,6 +91,8 @@ type benchSummary struct {
 	ForbidHits            int      `json:"forbid_hits"`
 	Clean                 bool     `json:"clean"`
 	QualityPass           bool     `json:"quality_pass"`
+	GateNoiseAtK          float64  `json:"gate_noise_at_k,omitempty"`
+	GateFailures          []string `json:"gate_failures,omitempty"`
 	MinRecall             float64  `json:"min_recall"`
 	MaxNoise              float64  `json:"max_noise"`
 	AvgDurationNS         float64  `json:"avg_duration_ns"`
@@ -149,6 +152,7 @@ func parseFlags() benchConfig {
 	flag.Float64Var(&cfg.MinRecall, "min-recall", 0.65, "summary quality threshold for recall@k")
 	flag.Float64Var(&cfg.MaxNoise, "max-noise", 0.60, "summary quality threshold for noise@k")
 	flag.IntVar(&cfg.MaxStaleHits, "max-stale-hits", 0, "maximum allowed forbidden/stale hits for a clean run")
+	flag.BoolVar(&cfg.EnforceGate, "enforce-gate", true, "exit non-zero when the quality gate fails")
 	flag.StringVar(&cfg.RealDatasetTag, "real-dataset-tag", "real", "dataset label used for dataset=real")
 	flag.Parse()
 	return cfg
@@ -186,6 +190,7 @@ func run(cfg benchConfig) error {
 	}
 
 	var all []benchRecord
+	var gateFailures []string
 	for _, scenario := range scenarios {
 		records, err := runScenario(cfg, ds, scenario, enc)
 		all = append(all, records...)
@@ -197,6 +202,9 @@ func run(cfg benchConfig) error {
 			return fmt.Errorf("write summary: %w", err)
 		}
 		printSummary(summary)
+		if len(summary.GateFailures) > 0 {
+			gateFailures = append(gateFailures, fmt.Sprintf("%s: %s", scenario, strings.Join(summary.GateFailures, "; ")))
+		}
 	}
 	if len(scenarios) > 1 {
 		summary := summarizeRecords(cfg, "all", all)
@@ -204,9 +212,15 @@ func run(cfg benchConfig) error {
 			return fmt.Errorf("write aggregate summary: %w", err)
 		}
 		printSummary(summary)
+		if len(summary.GateFailures) > 0 {
+			gateFailures = append(gateFailures, fmt.Sprintf("all: %s", strings.Join(summary.GateFailures, "; ")))
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "results: %s\nmemory: %s\n", cfg.OutPath, ds.Dir)
+	if cfg.EnforceGate && len(gateFailures) > 0 {
+		return fmt.Errorf("quality gate failed:\n  %s", strings.Join(gateFailures, "\n  "))
+	}
 	return nil
 }
 
@@ -505,7 +519,9 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 		MaxNoise:  cfg.MaxNoise,
 	}
 	if len(records) == 0 {
+		summary.Clean = false
 		summary.QualityPass = false
+		summary.GateFailures = []string{"no records"}
 		return summary
 	}
 
@@ -518,7 +534,9 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 	var graphOnN, graphOffN int
 	var tidalOnMRR, tidalOffMRR, tidalOnStale, tidalOffStale, tidalOnDuration, tidalOffDuration float64
 	var tidalOnN, tidalOffN int
-	qualityRecords := 0
+	var gateRecall, gateNoise float64
+	var gateRecallN, gateNoiseN int
+	gateForbidHits := 0
 	for _, record := range records {
 		durations = append(durations, record.DurationNS)
 		durationTotal += record.DurationNS
@@ -535,8 +553,24 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 		if !record.Clean && record.Scenario != "tidal" {
 			summary.Clean = false
 		}
+		// Control arms are measured, not graded: graph_off and tidal_off are the
+		// deliberate baselines the experimental arm has to beat, so their noise
+		// and stale hits must not be able to fail the gate.
+		if record.ForbidHitCount > 0 && !isControlMode(record.Mode) {
+			gateForbidHits += record.ForbidHitCount
+		}
+		if !isControlMode(record.Mode) {
+			gateNoise += record.NoiseAtK
+			gateNoiseN++
+			if record.ExpectedCount > 0 {
+				gateRecall += record.RecallAtK
+				gateRecallN++
+			}
+		}
+		if !record.Clean && !isControlMode(record.Mode) {
+			summary.Clean = false
+		}
 		if record.ExpectedCount > 0 || record.ExpectedRisk > 0 || record.ExpectedTools > 0 {
-			qualityRecords++
 			if record.ExpectedRisk > 0 {
 				riskRecall += record.RiskRecall
 				riskN++
@@ -605,23 +639,47 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 		summary.ComparedModes = []string{"tidal_off", "tidal_on"}
 	}
 
-	summary.QualityPass = summary.Clean
-	if qualityRecords > 0 {
-		if scenario == "tidal" && tidalOnN > 0 {
-			summary.QualityPass = summary.QualityPass && summary.AvgTidalOnMRR >= cfg.MinRecall && summary.TidalMRRLift >= 0 && summary.TidalStaleRateDelta <= 0
-		} else {
-			candidateRecords := qualityCandidateRecords(records)
-			recallAvg, noiseAvg := averageRecallNoise(candidateRecords)
-			summary.QualityPass = summary.QualityPass && recallAvg >= cfg.MinRecall && noiseAvg <= cfg.MaxNoise
-		}
-		if riskN > 0 {
-			summary.QualityPass = summary.QualityPass && summary.AvgRiskRecall >= cfg.MinRecall
-		}
-		if toolN > 0 {
-			summary.QualityPass = summary.QualityPass && summary.AvgToolRecall >= cfg.MinRecall
+	if gateNoiseN > 0 {
+		summary.GateNoiseAtK = gateNoise / float64(gateNoiseN)
+	}
+
+	// Explicit assertions. Every failure names the number that broke and the
+	// threshold it broke, so a red run is self-explanatory instead of leaving
+	// the operator to diff a printed average against a flag default.
+	var failures []string
+	if summary.Errors > 0 {
+		failures = append(failures, fmt.Sprintf("errors=%d", summary.Errors))
+	}
+	if gateForbidHits > 0 {
+		failures = append(failures, fmt.Sprintf("forbid_hits=%d", gateForbidHits))
+	}
+	if gateRecallN > 0 {
+		if avg := gateRecall / float64(gateRecallN); avg < cfg.MinRecall {
+			failures = append(failures, fmt.Sprintf("recall@k=%.2f < %.2f", avg, cfg.MinRecall))
 		}
 	}
+	if gateNoiseN > 0 && summary.GateNoiseAtK > cfg.MaxNoise {
+		failures = append(failures, fmt.Sprintf("noise@k=%.2f > %.2f", summary.GateNoiseAtK, cfg.MaxNoise))
+	}
+	if scenario == "tidal" && tidalOnN > 0 {
+		if summary.AvgTidalOnMRR < cfg.MinRecall {
+			failures = append(failures, fmt.Sprintf("tidal_on mrr=%.2f < %.2f", summary.AvgTidalOnMRR, cfg.MinRecall))
+		}
+		if tidalOffN > 0 && summary.TidalStaleRateDelta > 0 {
+			failures = append(failures, fmt.Sprintf("tidal stale_rate_delta=%.2f > 0", summary.TidalStaleRateDelta))
+		}
+	}
+	if len(failures) > 0 {
+		summary.Clean = false
+	}
+	summary.GateFailures = failures
+	summary.QualityPass = len(failures) == 0
 	return summary
+}
+
+// isControlMode reports whether a record belongs to a deliberate control arm.
+func isControlMode(mode string) bool {
+	return mode == "graph_off" || mode == "tidal_off"
 }
 
 func qualityCandidateRecords(records []benchRecord) []benchRecord {
@@ -702,4 +760,7 @@ func printSummary(summary benchSummary) {
 		summary.Clean,
 		summary.QualityPass,
 	)
+	if len(summary.GateFailures) > 0 {
+		fmt.Fprintf(os.Stderr, "  gate_failures: %s\n", strings.Join(summary.GateFailures, "; "))
+	}
 }
