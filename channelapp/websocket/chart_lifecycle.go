@@ -187,6 +187,16 @@ func (c *chartLifecycle) rememberChart(sessionID string, version chartVersion) e
 		return nil
 	}
 	c.current[key] = version
+	// An Apply is admitted before the model run completes. Do not advance the
+	// current version at admission time: a failed validation must leave the
+	// last good chart retryable. A later server delta is the commit point.
+	applyPrefix := key + "\x00"
+	for actionKey, result := range c.applied {
+		if strings.HasPrefix(actionKey, applyPrefix) && result.DataVersion < version.DataVersion {
+			result.DataVersion = version.DataVersion
+			c.applied[actionKey] = result
+		}
+	}
 	return c.saveLocked(sessionID)
 }
 
@@ -250,14 +260,7 @@ func (c *chartLifecycle) commitApply(sessionID, childTurn string, wire chartWire
 			current.DataVersion = previous.DataVersion
 			return current, nil
 		}
-		nextVersion := current.DataVersion
-		if wire.Operation == "apply" {
-			nextVersion++
-		}
-		c.applied[applyKey] = chartApplyResult{ActionID: wire.ActionID, DataVersion: nextVersion, ChildTurn: childTurn}
-	}
-	if wire.Operation == "apply" {
-		current.DataVersion++
+		c.applied[applyKey] = chartApplyResult{ActionID: wire.ActionID, DataVersion: current.DataVersion, ChildTurn: childTurn}
 	}
 	c.current[key] = current
 	return current, c.saveLocked(sessionID)
