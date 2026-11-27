@@ -20,12 +20,13 @@ func TestHTTPDelegateSubmissionDedup(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := make(chan struct{}, 4)
+	release := make(chan struct{})
 	handler := collab.TaskHandlerFunc(func(ctx context.Context, task *collab.SubTask) (string, error) {
 		started <- struct{}{}
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(300 * time.Millisecond):
+		case <-release:
 			return "processed: " + task.Input, nil
 		}
 	})
@@ -114,6 +115,7 @@ func TestHTTPDelegateSubmissionDedup(t *testing.T) {
 	if pending.Ready || pending.Status != "not_ready" || pending.Task.ID != created.ID || delegateResultReady(pending.Task.State) {
 		t.Fatalf("unfinished result looked ready: %s", notReady.Body.String())
 	}
+	close(release)
 }
 
 func delegateResultReady(state collab.TaskState) bool {
