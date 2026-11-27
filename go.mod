@@ -12,6 +12,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261126213455-2f932ce3e09c
+	github.com/yurika0211/luckyagent-orchestrator v0.1.3
 	github.com/yurika0211/luckyagent-plugins v0.1.0
 	github.com/yurika0211/luckyagent-runtime v0.3.4-0.20261126200308-e3500a1acd15
 	golang.org/x/term v0.41.0
@@ -29,7 +30,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/yuin/goldmark v1.3.5 // indirect
 	github.com/yurika0211/aestus v0.1.1-0.20261031163709-5ea8b187b6af // indirect
-	github.com/yurika0211/luckyagent-orchestrator v0.1.3 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0 // indirect
@@ -77,7 +77,7 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yurika0211/luckyagent-api v0.2.6-0.20261126195125-a950a46a5bdc
 	github.com/yurika0211/luckyagent-gateway v0.2.4
-	github.com/yurika0211/luckyagent-tools v0.2.8-0.20261126204245-6c65510c931f
+	github.com/yurika0211/luckyagent-tools v0.2.8
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
