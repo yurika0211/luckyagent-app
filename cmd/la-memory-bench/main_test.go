@@ -175,7 +175,13 @@ func TestTidalScenarioReportsMRRLift(t *testing.T) {
 	}
 }
 
-func TestAllSummaryIgnoresTidalControlGroupDirtyRecords(t *testing.T) {
+// The old TestAllSummaryIgnoresTidalControlGroupDirtyRecords asserted that a
+// dirty tidal arm left the summary clean. That locked in the defect reported in
+// issue #529: stale suppression could fail every round and still report
+// clean=true. The gate now grades the experimental arm only, and the control
+// arm is excluded explicitly rather than by an "all tidal" escape hatch.
+
+func TestAllSummaryIgnoresTidalControlArmOnly(t *testing.T) {
 	cfg := benchConfig{
 		Variant:      "test",
 		Dataset:      "synthetic",
@@ -196,6 +202,52 @@ func TestAllSummaryIgnoresTidalControlGroupDirtyRecords(t *testing.T) {
 			Clean:         true,
 		},
 		{
+			// Control arm: stale suppression deliberately off.
+			Scenario:       "tidal",
+			Mode:           "tidal_off",
+			DurationNS:     100,
+			ExpectedCount:  1,
+			RecallAtK:      1.0,
+			MRR:            0.5,
+			NoiseAtK:       0.8,
+			StaleHitRate:   0.25,
+			ForbidHitCount: 1,
+			Clean:          false,
+		},
+		{
+			Scenario:      "tidal",
+			Mode:          "tidal_on",
+			DurationNS:    100,
+			ExpectedCount: 1,
+			RecallAtK:     1.0,
+			MRR:           1.0,
+			NoiseAtK:      0.4,
+			StaleHitRate:  0.10,
+			Clean:         true,
+		},
+	}
+
+	got := summarizeRecords(cfg, "all", records)
+	if !got.Clean || !got.QualityPass {
+		t.Fatalf("control arm must not fail the gate: %#v", got.GateFailures)
+	}
+	if got.TidalMRRLift <= 0 || got.TidalStaleRateDelta > 0 {
+		t.Fatalf("expected tidal comparison metrics, got %#v", got)
+	}
+}
+
+func TestTidalOnStaleHitsFailTheGate(t *testing.T) {
+	cfg := benchConfig{
+		Variant:      "test",
+		Dataset:      "synthetic",
+		Size:         100,
+		Rounds:       1,
+		MinRecall:    0.5,
+		MaxNoise:     0.5,
+		MaxStaleHits: 0,
+	}
+	records := []benchRecord{
+		{
 			Scenario:      "tidal",
 			Mode:          "tidal_off",
 			DurationNS:    100,
@@ -207,23 +259,132 @@ func TestAllSummaryIgnoresTidalControlGroupDirtyRecords(t *testing.T) {
 			Clean:         false,
 		},
 		{
+			// Experimental arm returning a forbidden note is a real defect.
+			Scenario:       "tidal",
+			Mode:           "tidal_on",
+			DurationNS:     100,
+			ExpectedCount:  1,
+			RecallAtK:      1.0,
+			MRR:            1.0,
+			NoiseAtK:       0.4,
+			StaleHitRate:   0.10,
+			ForbidHitCount: 1,
+			Clean:          false,
+		},
+	}
+
+	got := summarizeRecords(cfg, "all", records)
+	if got.Clean || got.QualityPass {
+		t.Fatalf("tidal_on stale hits must fail the gate: %#v", got)
+	}
+	if !containsFailure(got.GateFailures, "forbid_hits=1") {
+		t.Fatalf("expected forbid_hits failure, got %#v", got.GateFailures)
+	}
+}
+
+func TestNoiseBreachFailsTheGate(t *testing.T) {
+	cfg := benchConfig{
+		MinRecall:    0.5,
+		MaxNoise:     0.5,
+		MaxStaleHits: 0,
+	}
+	records := []benchRecord{
+		{
+			Scenario:      "graph",
+			Mode:          "graph_on",
+			DurationNS:    100,
+			ExpectedCount: 1,
+			RecallAtK:     1.0,
+			NoiseAtK:      0.9,
+			Clean:         true,
+		},
+	}
+
+	got := summarizeRecords(cfg, "graph", records)
+	if got.QualityPass {
+		t.Fatalf("noise 0.90 above 0.50 must fail, got %#v", got)
+	}
+	if !containsFailure(got.GateFailures, "noise@k=0.90 > 0.50") {
+		t.Fatalf("expected noise failure naming both numbers, got %#v", got.GateFailures)
+	}
+	if got.Clean {
+		t.Fatalf("a failed gate must not report clean")
+	}
+}
+
+func TestForbidHitsOutsideControlFailTheGate(t *testing.T) {
+	cfg := benchConfig{
+		MinRecall:    0.5,
+		MaxNoise:     0.5,
+		MaxStaleHits: 0,
+	}
+	records := []benchRecord{
+		{
+			Scenario:       "lexical",
+			Mode:           "lexical",
+			DurationNS:     100,
+			ExpectedCount:  1,
+			RecallAtK:      1.0,
+			NoiseAtK:       0.2,
+			ForbidHitCount: 2,
+			Clean:          false,
+		},
+	}
+
+	got := summarizeRecords(cfg, "lexical", records)
+	if got.QualityPass {
+		t.Fatalf("forbid hits must fail the gate: %#v", got)
+	}
+	if !containsFailure(got.GateFailures, "forbid_hits=2") {
+		t.Fatalf("expected forbid_hits=2 failure, got %#v", got.GateFailures)
+	}
+}
+
+func TestTidalStaleRateIncreaseFailsTheGate(t *testing.T) {
+	cfg := benchConfig{
+		MinRecall:    0.5,
+		MaxNoise:     1.0,
+		MaxStaleHits: 0,
+	}
+	records := []benchRecord{
+		{
+			Scenario:      "tidal",
+			Mode:          "tidal_off",
+			DurationNS:    100,
+			ExpectedCount: 1,
+			RecallAtK:     1.0,
+			MRR:           1.0,
+			NoiseAtK:      0.2,
+			StaleHitRate:  0.10,
+			Clean:         true,
+		},
+		{
 			Scenario:      "tidal",
 			Mode:          "tidal_on",
 			DurationNS:    100,
 			ExpectedCount: 1,
 			RecallAtK:     1.0,
 			MRR:           1.0,
-			NoiseAtK:      0.8,
+			NoiseAtK:      0.2,
 			StaleHitRate:  0.25,
-			Clean:         false,
+			Clean:         true,
 		},
 	}
 
-	got := summarizeRecords(cfg, "all", records)
-	if !got.Clean || !got.QualityPass {
-		t.Fatalf("expected all summary to use candidate quality, got %#v", got)
+	got := summarizeRecords(cfg, "tidal", records)
+	if got.QualityPass {
+		t.Fatalf("suppression that raises stale rate must fail: %#v", got)
 	}
-	if got.TidalMRRLift <= 0 || got.TidalStaleRateDelta > 0 {
-		t.Fatalf("expected tidal comparison metrics, got %#v", got)
+	if !containsFailure(got.GateFailures, "tidal stale_rate_delta=0.15 > 0") {
+		t.Fatalf("expected stale_rate_delta failure, got %#v", got.GateFailures)
 	}
+}
+
+func containsFailure(failures []string, want string) bool {
+	for _, f := range failures {
+		if f == want {
+			return true
+		}
+	}
+	return false
 }
