@@ -87,3 +87,67 @@ func TestChartLifecyclePersistsVersionsAndIdempotency(t *testing.T) {
 		t.Fatal("stale action was accepted after reload")
 	}
 }
+
+func TestChartFailureKeepsCurrentVersionAndParams(t *testing.T) {
+	root := t.TempDir()
+	life := newChartLifecycle(filepath.Join(root, "charts"))
+	if err := life.rememberChart("s", chartVersion{
+		ChartID: "c", SchemaVersion: 1, DataVersion: 2, Mode: "teaching",
+		Params: map[string]string{"x": "day"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bad := chartWireAction{
+		ActionID: "bad", ChartID: "c", SchemaVersion: 1, DataVersion: 2, Operation: "apply",
+		Params: map[string]string{"x": "not-a-field"},
+	}
+	if _, err := life.failApply("s", "turn-bad", bad, "validation failed"); err != nil {
+		t.Fatal(err)
+	}
+	again, replay, err := life.acceptApply("s", bad)
+	if err != nil || !replay || !again.Failed || again.DataVersion != 2 || again.ChildTurn != "turn-bad" {
+		t.Fatalf("failed retry=%#v replay=%v err=%v", again, replay, err)
+	}
+	snap, ok, err := life.snapshot("s", "c")
+	if err != nil || !ok || snap.Current.DataVersion != 2 || snap.Current.Params["x"] != "day" {
+		t.Fatalf("current after failure=%#v ok=%v err=%v", snap.Current, ok, err)
+	}
+
+	good := chartWireAction{
+		ActionID: "good", ChartID: "c", SchemaVersion: 1, DataVersion: 2, Operation: "apply",
+		Params: map[string]string{"x": "hour"},
+	}
+	if _, err := life.commitApply("s", "turn-good", good); err != nil {
+		t.Fatal(err)
+	}
+	if err := life.rememberChart("s", chartVersion{
+		ChartID: "c", SchemaVersion: 1, DataVersion: 3, Mode: "teaching",
+		Params: map[string]string{"x": "hour"}, State: "complete",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := newChartLifecycle(filepath.Join(root, "charts"))
+	snap, ok, err = reloaded.snapshot("s", "c")
+	if err != nil || !ok || snap.Current.DataVersion != 3 || snap.Current.Mode != "teaching" || snap.Current.Params["x"] != "hour" {
+		t.Fatalf("reloaded current=%#v ok=%v err=%v", snap.Current, ok, err)
+	}
+	var sawOld bool
+	for _, version := range snap.History {
+		if version.DataVersion == 2 && version.Params["x"] == "day" {
+			sawOld = true
+		}
+	}
+	if !sawOld {
+		t.Fatalf("history lost the previous chart: %#v", snap.History)
+	}
+	old := good
+	old.ActionID = "late"
+	old.DataVersion = 2
+	if _, _, err := reloaded.acceptApply("s", old); err == nil {
+		t.Fatal("action on the previous data_version was accepted")
+	}
+	same, replay, err := reloaded.acceptApply("s", good)
+	if err != nil || !replay || same.DataVersion != 3 || same.ChildTurn != "turn-good" {
+		t.Fatalf("successful retry=%#v replay=%v err=%v", same, replay, err)
+	}
+}

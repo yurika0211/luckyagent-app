@@ -274,6 +274,74 @@ func TestHandleUIActionChartStartKeepsTree(t *testing.T) {
 	}
 }
 
+func TestHandleUIActionChartFailureKeepsVersion(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &stubAgentRuntime{
+		sessions: mgr,
+		tools:    tool.NewRegistry(),
+		chatStreamInputFn: func(context.Context, string, agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			out := make(chan agent.ChatEvent, 1)
+			out <- agent.ChatEvent{Type: agent.ChatEventError, Content: "field combination rejected"}
+			close(out)
+			return out, nil
+		},
+	}
+	h := NewAgentHandler(runtime)
+	h.recordUIDelta("ui-session", openui.Delta{
+		TreeID: "tree-1",
+		State:  openui.StateComplete,
+		Nodes: []openui.Node{{
+			ID:   "chart-1",
+			Type: "Chart",
+			Props: map[string]any{
+				"chart_id":       "trend",
+				"schema_version": 1,
+				"data_version":   4,
+				"mode":           "teaching",
+				"kind":           "line",
+				"series":         []any{},
+			},
+		}},
+	})
+	client := &Client{ID: "android", SessionID: "ui-session", Send: make(chan *Message, 16)}
+	payload := map[string]any{
+		"tree_id":        "tree-1",
+		"widget_id":      "chart-1",
+		"action_id":      "act-fail",
+		"chart_id":       "trend",
+		"schema_version": 1,
+		"data_version":   4,
+		"operation":      "apply",
+		"values":         map[string]any{"x": "not-a-field"},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.HandleMessage(client, &Message{Type: TypeUIAction, SessionID: client.SessionID, ID: "act-fail", Data: data})
+	if !h.WaitSession(client.SessionID, 2*time.Second) {
+		t.Fatal("failed chart apply did not finish")
+	}
+	snap, ok, err := h.charts.snapshot("ui-session", "trend")
+	if err != nil || !ok || snap.Current.DataVersion != 4 || snap.Current.Mode != "teaching" {
+		t.Fatalf("chart after failure=%#v ok=%v err=%v", snap.Current, ok, err)
+	}
+	if snap.Current.Params["x"] == "not-a-field" {
+		t.Fatalf("failed params replaced the chart: %#v", snap.Current.Params)
+	}
+	wire, err := chartWireFromMessage(&Message{Data: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, replay, err := h.charts.acceptApply("ui-session", wire)
+	if err != nil || !replay || !again.Failed || again.DataVersion != 4 {
+		t.Fatalf("retry=%#v replay=%v err=%v", again, replay, err)
+	}
+}
+
 func assertUIActionError(t *testing.T, client *Client, code, text string) {
 	t.Helper()
 	select {

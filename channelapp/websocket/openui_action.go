@@ -17,6 +17,11 @@ type uiTreeEntry struct {
 	updatedAt time.Time
 }
 
+type pendingChartApply struct {
+	sessionID string
+	wire      chartWireAction
+}
+
 // recordUIDelta keeps the latest catalog tree for the session so a client
 // action can be checked against the server-approved widget. Trees are
 // intentionally in-memory: a process restart expires outstanding controls.
@@ -65,7 +70,7 @@ func (h *AgentHandler) rememberChartVersions(sessionID string, delta openui.Delt
 		if chartID == "" {
 			chartID = strings.TrimSpace(node.ID)
 		}
-		version := chartVersion{ChartID: chartID, Mode: mode, SchemaVersion: 1, DataVersion: 1}
+		version := chartVersion{ChartID: chartID, Mode: mode, SchemaVersion: 1, DataVersion: 1, TreeID: delta.TreeID, State: delta.State}
 		if n, ok := numberToInt(node.Props["schema_version"]); ok && n > 0 {
 			version.SchemaVersion = n
 		}
@@ -168,18 +173,62 @@ func (h *AgentHandler) handleUIAction(client *Client, msg *Message) {
 			Stream:  true,
 		}),
 	}
-	h.handleChat(client, chat)
-	// handleChat durably admits the child run before returning. Record the
-	// action only after that admission so a storage failure does not consume
-	// an action id that the client can no longer retry.
 	if chartApply && wire.ChartID != "" {
-		if _, ok, err := h.store.GetRun(sessionID, msg.ID); err != nil {
-			logger.Warn("read OpenUI chart child run failed", "session_id", sessionID, "action_id", wire.ActionID, "error", err)
-		} else if ok {
-			if _, err := h.charts.commitApply(sessionID, msg.ID, wire); err != nil {
-				logger.Warn("persist OpenUI chart action failed", "session_id", sessionID, "action_id", wire.ActionID, "error", err)
-			}
-		}
+		h.rememberPendingChart(msg.ID, sessionID, wire)
+	}
+	h.handleChat(client, chat)
+	// The child turn finishes after this returns. finishRun records the action
+	// once the run state is terminal, so a validation failure does not publish
+	// a new chart version.
+}
+
+func (h *AgentHandler) rememberPendingChart(runID, sessionID string, wire chartWireAction) {
+	if h == nil || strings.TrimSpace(runID) == "" || wire.ChartID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pendingCharts == nil {
+		h.pendingCharts = map[string]pendingChartApply{}
+	}
+	h.pendingCharts[runID] = pendingChartApply{sessionID: sessionID, wire: wire}
+}
+
+func (h *AgentHandler) takePendingChart(runID string) (pendingChartApply, bool) {
+	if h == nil {
+		return pendingChartApply{}, false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pending, ok := h.pendingCharts[runID]
+	if ok {
+		delete(h.pendingCharts, runID)
+	}
+	return pending, ok
+}
+
+func (h *AgentHandler) settleChartApply(runID, state string) {
+	pending, ok := h.takePendingChart(runID)
+	if !ok || h.charts == nil {
+		return
+	}
+	var err error
+	if runFailed(state) {
+		_, err = h.charts.failApply(pending.sessionID, runID, pending.wire, state)
+	} else {
+		_, err = h.charts.commitApply(pending.sessionID, runID, pending.wire)
+	}
+	if err != nil {
+		logger.Warn("persist OpenUI chart action failed", "session_id", pending.sessionID, "action_id", pending.wire.ActionID, "error", err)
+	}
+}
+
+func runFailed(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "error", "failed", "cancelled":
+		return true
+	default:
+		return false
 	}
 }
 

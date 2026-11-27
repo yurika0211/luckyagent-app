@@ -14,11 +14,12 @@ import (
 // type does not have these fields yet, so they are read from the raw message
 // and ignored when absent. That keeps older clients working.
 type chartWireAction struct {
-	ActionID      string `json:"action_id"`
-	ChartID       string `json:"chart_id"`
-	SchemaVersion int    `json:"schema_version"`
-	DataVersion   int64  `json:"data_version"`
-	Operation     string `json:"operation"`
+	ActionID      string            `json:"action_id"`
+	ChartID       string            `json:"chart_id"`
+	SchemaVersion int               `json:"schema_version"`
+	DataVersion   int64             `json:"data_version"`
+	Operation     string            `json:"operation"`
+	Params        map[string]string `json:"-"`
 }
 
 func chartWireFromMessage(msg *Message) (chartWireAction, error) {
@@ -32,7 +33,45 @@ func chartWireFromMessage(msg *Message) (chartWireAction, error) {
 	wire.ActionID = strings.TrimSpace(wire.ActionID)
 	wire.ChartID = strings.TrimSpace(wire.ChartID)
 	wire.Operation = strings.ToLower(strings.TrimSpace(wire.Operation))
+	var envelope struct {
+		Values map[string]any `json:"values"`
+	}
+	if err := json.Unmarshal(msg.Data, &envelope); err == nil {
+		wire.Params = stringParams(envelope.Values)
+	}
 	return wire, nil
+}
+
+func stringParams(values map[string]any) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				out[key] = typed
+			}
+		case float64:
+			out[key] = strings.TrimRight(strings.TrimRight(fmt.Sprintf("%f", typed), "0"), ".")
+		case bool:
+			out[key] = fmt.Sprintf("%t", typed)
+		default:
+			raw, err := json.Marshal(typed)
+			if err == nil {
+				out[key] = string(raw)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // chartLifecycle is the latest applied version of one chart in one session.
@@ -44,12 +83,14 @@ type chartLifecycle struct {
 	root    string
 	loaded  map[string]bool
 	current map[string]chartVersion
+	history map[string][]chartVersion
 	applied map[string]chartApplyResult
 }
 
 type persistedChartLifecycle struct {
 	Version int                         `json:"version"`
 	Current map[string]chartVersion     `json:"current,omitempty"`
+	History map[string][]chartVersion   `json:"history,omitempty"`
 	Applied map[string]chartApplyResult `json:"applied,omitempty"`
 }
 
@@ -58,12 +99,17 @@ type chartVersion struct {
 	SchemaVersion int
 	DataVersion   int64
 	Mode          string
+	Params        map[string]string
+	TreeID        string
+	State         string
 }
 
 type chartApplyResult struct {
 	ActionID    string
 	DataVersion int64
 	ChildTurn   string
+	Failed      bool
+	Error       string
 }
 
 func newChartLifecycle(root ...string) *chartLifecycle {
@@ -71,6 +117,7 @@ func newChartLifecycle(root ...string) *chartLifecycle {
 		root:    strings.TrimSpace(firstString(root)),
 		loaded:  map[string]bool{},
 		current: map[string]chartVersion{},
+		history: map[string][]chartVersion{},
 		applied: map[string]chartApplyResult{},
 	}
 }
@@ -114,6 +161,9 @@ func (c *chartLifecycle) loadLocked(sessionID string) error {
 	for chartID, version := range state.Current {
 		c.current[prefix+chartID] = version
 	}
+	for chartID, versions := range state.History {
+		c.history[prefix+chartID] = versions
+	}
 	for actionID, result := range state.Applied {
 		c.applied[prefix+actionID] = result
 	}
@@ -126,10 +176,20 @@ func (c *chartLifecycle) saveLocked(sessionID string) error {
 		return nil
 	}
 	prefix := sessionID + "\x00"
-	state := persistedChartLifecycle{Version: 1, Current: map[string]chartVersion{}, Applied: map[string]chartApplyResult{}}
+	state := persistedChartLifecycle{
+		Version: 1,
+		Current: map[string]chartVersion{},
+		History: map[string][]chartVersion{},
+		Applied: map[string]chartApplyResult{},
+	}
 	for key, version := range c.current {
 		if strings.HasPrefix(key, prefix) {
 			state.Current[strings.TrimPrefix(key, prefix)] = version
+		}
+	}
+	for key, versions := range c.history {
+		if strings.HasPrefix(key, prefix) {
+			state.History[strings.TrimPrefix(key, prefix)] = versions
 		}
 	}
 	for key, result := range c.applied {
@@ -184,20 +244,62 @@ func (c *chartLifecycle) rememberChart(sessionID string, version chartVersion) e
 	}
 	key := chartKey(sessionID, version.ChartID)
 	if previous, ok := c.current[key]; ok && previous.SchemaVersion == version.SchemaVersion && previous.DataVersion > version.DataVersion {
-		return nil
+		// An older snapshot stays in history. It does not replace the chart
+		// the client is looking at.
+		c.appendHistoryLocked(key, version)
+		return c.saveLocked(sessionID)
+	}
+	if previous, ok := c.current[key]; ok {
+		c.appendHistoryLocked(key, previous)
 	}
 	c.current[key] = version
-	// An Apply is admitted before the model run completes. Do not advance the
-	// current version at admission time: a failed validation must leave the
-	// last good chart retryable. A later server delta is the commit point.
+	c.appendHistoryLocked(key, version)
+	// A stored action keeps its child turn. Its reported version follows the
+	// chart now on screen, so a retry after a successful delta is not stale.
 	applyPrefix := key + "\x00"
 	for actionKey, result := range c.applied {
-		if strings.HasPrefix(actionKey, applyPrefix) && result.DataVersion < version.DataVersion {
+		if strings.HasPrefix(actionKey, applyPrefix) && !result.Failed && result.DataVersion < version.DataVersion {
 			result.DataVersion = version.DataVersion
 			c.applied[actionKey] = result
 		}
 	}
 	return c.saveLocked(sessionID)
+}
+
+func (c *chartLifecycle) appendHistoryLocked(key string, version chartVersion) {
+	if version.ChartID == "" || version.DataVersion < 1 {
+		return
+	}
+	for _, existing := range c.history[key] {
+		if existing.SchemaVersion == version.SchemaVersion && existing.DataVersion == version.DataVersion {
+			return
+		}
+	}
+	c.history[key] = append(c.history[key], version)
+}
+
+// chartSnapshot is what a restarted process can show before the next delta.
+type chartSnapshot struct {
+	Current chartVersion
+	History []chartVersion
+}
+
+func (c *chartLifecycle) snapshot(sessionID, chartID string) (chartSnapshot, bool, error) {
+	if c == nil || strings.TrimSpace(chartID) == "" {
+		return chartSnapshot{}, false, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.loadLocked(sessionID); err != nil {
+		return chartSnapshot{}, false, err
+	}
+	key := chartKey(sessionID, chartID)
+	current, ok := c.current[key]
+	if !ok {
+		return chartSnapshot{}, false, nil
+	}
+	history := append([]chartVersion(nil), c.history[key]...)
+	return chartSnapshot{Current: current, History: history}, true, nil
 }
 
 // acceptApply decides whether this action may start a child turn.
@@ -241,9 +343,21 @@ func (c *chartLifecycle) acceptApply(sessionID string, wire chartWireAction) (ch
 	return chartApplyResult{ActionID: wire.ActionID, DataVersion: current.DataVersion}, false, nil
 }
 
-// commitApply stores the child turn for an accepted action and advances the
-// data version by one. A second commit of the same action id is a no-op.
+// commitApply stores the child turn for an accepted action. It does not
+// advance the data version: the next server delta is the new chart. A second
+// commit of the same action id returns the stored result.
 func (c *chartLifecycle) commitApply(sessionID, childTurn string, wire chartWireAction) (chartVersion, error) {
+	return c.finishApply(sessionID, childTurn, wire, false, "")
+}
+
+// failApply records a rejected action and leaves the current chart in place.
+// The stored result is what a retry of the same action id returns. Params on
+// the current chart are not replaced by the rejected values.
+func (c *chartLifecycle) failApply(sessionID, childTurn string, wire chartWireAction, reason string) (chartVersion, error) {
+	return c.finishApply(sessionID, childTurn, wire, true, reason)
+}
+
+func (c *chartLifecycle) finishApply(sessionID, childTurn string, wire chartWireAction, failed bool, reason string) (chartVersion, error) {
 	if c == nil || wire.ChartID == "" {
 		return chartVersion{}, nil
 	}
@@ -260,8 +374,18 @@ func (c *chartLifecycle) commitApply(sessionID, childTurn string, wire chartWire
 			current.DataVersion = previous.DataVersion
 			return current, nil
 		}
-		c.applied[applyKey] = chartApplyResult{ActionID: wire.ActionID, DataVersion: current.DataVersion, ChildTurn: childTurn}
+		c.applied[applyKey] = chartApplyResult{
+			ActionID:    wire.ActionID,
+			DataVersion: current.DataVersion,
+			ChildTurn:   childTurn,
+			Failed:      failed,
+			Error:       reason,
+		}
 	}
-	c.current[key] = current
+	if !failed && len(wire.Params) > 0 {
+		current.Params = wire.Params
+		c.current[key] = current
+		c.appendHistoryLocked(key, current)
+	}
 	return current, c.saveLocked(sessionID)
 }
