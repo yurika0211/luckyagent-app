@@ -67,7 +67,7 @@ type queuedRun struct {
 	// resuming is set for the one continue that has already started this run.
 	// A second continue returns failure and does not start another copy.
 	resuming bool
-	client      *Client
+	client   *Client
 	// Bind an accepted turn to its original handle. A deleted session ID may
 	// later be reused, but queued work must not create or adopt that new session.
 	session *session.Session
@@ -109,18 +109,19 @@ type clientReplayLock struct {
 
 // AgentHandler 将 WebSocket 消息桥接到 Agent Loop
 type AgentHandler struct {
-	agent     agentRuntime
-	pending   map[string]context.CancelFunc // sessionID → cancel
-	done      map[string]chan struct{}      // sessionID → handler goroutine completion
-	runners   map[string]*sessionRunner
-	store     *runStore
-	eventSink func(string, *Message)
-	lucky     *luckycollector.Lucky
-	uiTrees   map[string]map[string]uiTreeEntry
-	charts    *chartLifecycle
-	started   bool
-	replays   map[*Client]*clientReplayLock
-	mu        sync.Mutex
+	agent         agentRuntime
+	pending       map[string]context.CancelFunc // sessionID → cancel
+	done          map[string]chan struct{}      // sessionID → handler goroutine completion
+	runners       map[string]*sessionRunner
+	store         *runStore
+	eventSink     func(string, *Message)
+	lucky         *luckycollector.Lucky
+	uiTrees       map[string]map[string]uiTreeEntry
+	charts        *chartLifecycle
+	pendingCharts map[string]pendingChartApply
+	started       bool
+	replays       map[*Client]*clientReplayLock
+	mu            sync.Mutex
 }
 
 // NewAgentHandler 创建 Agent 消息处理器
@@ -973,6 +974,7 @@ func (h *AgentHandler) finishRun(sessionID string, run *queuedRun, err error) {
 		}
 	}
 	h.mu.Unlock()
+	h.settleChartApply(run.id, state)
 	h.startNext(sessionID)
 }
 
