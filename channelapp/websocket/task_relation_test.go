@@ -36,8 +36,15 @@ func TestDependencyPlanWaitsAndCancelDoesNotSucceedDependent(t *testing.T) {
 		t.Fatal("dependent task was allowed to run in parallel")
 	}
 	runtime.plan = agent.TaskRelationPlan{Parallel: true, Reason: "independent"}
+	if h.taskCanRunParallel("sess", "unrelated formatting") {
+		t.Fatal("active turn asked the planner and released the next task")
+	}
+	h.mu.Lock()
+	h.runners["sess"].active = nil
+	h.runners["sess"].queue = []*queuedRun{{id: "queued-a", data: ChatData{Message: "task A"}}}
+	h.mu.Unlock()
 	if !h.taskCanRunParallel("sess", "unrelated formatting") {
-		t.Fatal("independent task was forced to wait")
+		t.Fatal("independent queued task was forced to wait")
 	}
 	h.mu.Lock()
 	h.runners["sess"].cancelledRuns = map[string]bool{"task-a": true}
@@ -45,5 +52,18 @@ func TestDependencyPlanWaitsAndCancelDoesNotSucceedDependent(t *testing.T) {
 	runtime.plan = agent.TaskRelationPlan{Parallel: false, DependsOn: []string{"task-a"}}
 	if h.taskCanRunParallel("sess", "finish B from A") {
 		t.Fatal("cancelled dependency was treated as success")
+	}
+}
+
+func TestNoPlannerWaitsInsteadOfKeywordRelease(t *testing.T) {
+	h := NewAgentHandler(&stubAgentRuntime{})
+	h.mu.Lock()
+	h.runners["sess"] = &sessionRunner{active: &queuedRun{id: "task-a", data: ChatData{Message: "search notes about cats"}}}
+	h.mu.Unlock()
+	if h.taskCanRunParallel("sess", "search notes about cats and dogs") {
+		t.Fatal("missing planner released the next task")
+	}
+	if h.taskCanRunParallel("sess", "completely different request") {
+		t.Fatal("missing planner used a keyword fallback")
 	}
 }

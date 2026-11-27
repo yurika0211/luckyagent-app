@@ -87,8 +87,9 @@ type Server struct {
 	wsHandler *websocket.AgentHandler
 
 	// v0.22.0: 多 Agent 协作
-	collabRegistry  *collab.Registry
-	delegateManager *collab.DelegateManager
+	collabRegistry      *collab.Registry
+	delegateManager     *collab.DelegateManager
+	delegateSubmissions map[string]delegateSubmission
 
 	// v0.24.0: Workflow Engine
 	workflowEngine *workflow.WorkflowEngine
