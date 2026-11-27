@@ -20,6 +20,7 @@ type entryMetrics struct {
 	NDCGAtK        float64
 	NoiseAtK       float64
 	StaleHitRate   float64
+	NoExpectation  bool
 }
 
 func evaluateEntries(query benchQuery, entries []memory.Entry, limit int) entryMetrics {
@@ -71,9 +72,10 @@ func evaluateEntries(query benchQuery, entries []memory.Entry, limit int) entryM
 			metrics.NDCGAtK = dcg / ideal
 		}
 	} else {
-		metrics.RecallAtK = 1
-		metrics.MRR = 1
-		metrics.NDCGAtK = 1
+		// No expected ids means recall, MRR, and nDCG are undefined, not
+		// perfect. Reporting 1.0 here made every want-less query look like a
+		// flawless retrieval and hid the fact that nothing was asserted.
+		metrics.NoExpectation = true
 	}
 
 	if len(entries) > 0 {
