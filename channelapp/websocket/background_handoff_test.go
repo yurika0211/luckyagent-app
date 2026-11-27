@@ -28,6 +28,7 @@ func TestEnqueueBackgroundTaskResultIsIdempotentAndRunsInOwnerSession(t *testing
 		},
 	}
 	h := NewAgentHandler(runtime)
+	mgr.Ensure("owner")
 	if !h.EnqueueBackgroundTaskResult("owner", "task-1", "inspect the release", "completed with evidence") {
 		t.Fatal("expected handoff to be queued")
 	}
@@ -44,5 +45,23 @@ func TestEnqueueBackgroundTaskResultIsIdempotentAndRunsInOwnerSession(t *testing
 	}
 	if !h.WaitSession("owner", 2*time.Second) {
 		t.Fatal("handoff run did not finish")
+	}
+}
+
+func TestLateHandoffDoesNotRecreateDeletedSession(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := mgr.Ensure("owner")
+	if err := mgr.Delete(owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	h := NewAgentHandler(&stubAgentRuntime{sessions: mgr, tools: tool.NewRegistry()})
+	if h.EnqueueBackgroundTaskResult("owner", "task-late", "inspect", "done") {
+		t.Fatal("late completion recreated a deleted session")
+	}
+	if _, ok := mgr.Get("owner"); ok {
+		t.Fatal("deleted session exists after late completion")
 	}
 }

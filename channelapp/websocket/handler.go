@@ -173,21 +173,37 @@ func (h *AgentHandler) taskCanRunParallel(sessionID, next string) bool {
 			add(run)
 		}
 	}
+	cancelled := map[string]bool{}
+	if runner != nil {
+		for id, stopped := range runner.cancelledRuns {
+			if stopped {
+				cancelled[id] = true
+			}
+		}
+	}
 	h.mu.Unlock()
 	if len(active) == 0 {
 		return true
 	}
-	// Admission stays local and side-effect free. Explicit dependency language
-	// waits; otherwise independent work may overlap. Hosts that have a model
-	// planner can replace this decision through taskRelationPlanner without
-	// adding a second provider call to ordinary queue admission.
-	lower := strings.ToLower(strings.TrimSpace(next))
-	for _, marker := range []string{"after", "depends", "based on", "依赖", "基于", "先完成", "must not", "deleted", "cancel"} {
-		if strings.Contains(lower, marker) {
+	planner, ok := h.agent.(taskRelationPlanner)
+	if !ok || planner == nil {
+		return true
+	}
+	plan, err := planner.PlanTaskRelation(context.Background(), active, next)
+	if err != nil || !plan.Parallel {
+		for _, dep := range plan.DependsOn {
+			if cancelled[dep] {
+				return false
+			}
+		}
+		return false
+	}
+	for _, dep := range plan.DependsOn {
+		if cancelled[dep] {
 			return false
 		}
 	}
-	return true
+	return len(plan.DependsOn) == 0
 }
 
 // staleRunTTL is how long a queued or running websocket checkpoint may sit
@@ -285,7 +301,7 @@ func (h *AgentHandler) EnqueueBackgroundTaskResult(sessionID, taskID, descriptio
 	if sessions := h.agent.Sessions(); sessions != nil {
 		run.session, _ = sessions.Get(sessionID)
 		if run.session == nil {
-			run.session = sessions.Ensure(sessionID)
+			return false
 		}
 	}
 	stored, created, err := h.store.CreateRun(persistedRun{

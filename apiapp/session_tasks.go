@@ -23,6 +23,8 @@ type sessionTaskCard struct {
 	Result        string                          `json:"result,omitempty"`
 	Unread        bool                            `json:"unread"`
 	NeedsAction   bool                            `json:"needs_action"`
+	CurrentStep   string                          `json:"current_step,omitempty"`
+	LastActivity  time.Time                       `json:"last_activity,omitempty"`
 	Observation   *taskstore.MainAgentObservation `json:"observation,omitempty"`
 }
 
@@ -46,7 +48,9 @@ func (s *Server) sessionTasks(sessionID string) ([]sessionTaskCard, sessionTaskS
 			continue
 		}
 		terminal := record.Status == taskstore.StatusCompleted || record.Status == taskstore.StatusFailed || record.Status == taskstore.StatusBlocked || record.Status == taskstore.StatusCancelled
-		unread := strings.TrimSpace(record.Metadata["task_handled_at"]) == ""
+		handledAt := strings.TrimSpace(record.Metadata["task_handled_at"])
+		resultAt := strings.TrimSpace(record.Metadata["result_at"])
+		unread := handledAt == "" || (resultAt != "" && resultAt > handledAt)
 		needsAction := record.Status == taskstore.StatusPending || record.Status == taskstore.StatusRunning || record.Status == taskstore.StatusBlocked || (terminal && unread)
 		if record.Status == taskstore.StatusPending || record.Status == taskstore.StatusRunning {
 			summary.Active++
@@ -57,11 +61,22 @@ func (s *Server) sessionTasks(sessionID string) ([]sessionTaskCard, sessionTaskS
 		result, _, _ := s.agent.TaskStore().Result(record.ID)
 		events, _ := s.agent.TaskStore().Events(record.ID)
 		observation := taskstore.ReduceObservation(record, events)
+		step := strings.TrimSpace(record.Metadata["current_step"])
+		if step == "" {
+			step = string(record.Status)
+		}
+		last := record.CompletedAt
+		if last.IsZero() {
+			last = record.StartedAt
+		}
+		if last.IsZero() {
+			last = record.CreatedAt
+		}
 		cards = append(cards, sessionTaskCard{
 			ID: record.ID, ParentID: record.ParentID, SessionID: record.ParentSessionID, ExecutionID: record.ExecutionSessionID,
 			Description: record.Description, Status: record.Status, CreatedAt: record.CreatedAt, StartedAt: record.StartedAt,
 			CompletedAt: record.CompletedAt, Workspace: record.Runtime.Workspace, ResultSummary: record.Metadata["result_summary"],
-			Result: result, Unread: unread, NeedsAction: needsAction, Observation: &observation,
+			Result: result, Unread: unread, NeedsAction: needsAction, CurrentStep: step, LastActivity: last, Observation: &observation,
 		})
 	}
 	return cards, summary, nil

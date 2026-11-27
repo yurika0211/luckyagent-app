@@ -60,7 +60,7 @@ func TestStartupDoesNotExecuteRecoveryMetadataWithDamagedHistory(t *testing.T) {
 	h.SetEventSink(func(_ string, msg *Message) { notifications <- msg })
 	h.Start()
 	h.Start()
-	if !h.ResumeSession("damaged", "") || !h.ResumeSession("damaged", "") {
+	if !h.ResumeSession("damaged", runs[0].ID) || !h.ResumeSession("damaged", runs[1].ID) {
 		t.Fatal("explicit resume did not release both recovered runs")
 	}
 	if !h.WaitSession("damaged", 2*time.Second) {
