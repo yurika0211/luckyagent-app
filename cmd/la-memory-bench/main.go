@@ -32,6 +32,7 @@ type benchConfig struct {
 	MinRecall      float64
 	MaxNoise       float64
 	MaxStaleHits   int
+	ExitOnFailure  bool
 	RealDatasetTag string
 }
 
@@ -58,6 +59,7 @@ type benchRecord struct {
 	HitCount          int       `json:"hit_count"`
 	ForbidCount       int       `json:"forbid_count"`
 	ForbidHitCount    int       `json:"forbid_hit_count"`
+	NoExpectation     bool      `json:"no_expectation,omitempty"`
 	RecallAtK         float64   `json:"recall_at_k"`
 	PrecisionAtK      float64   `json:"precision_at_k"`
 	MRR               float64   `json:"mrr"`
@@ -101,6 +103,8 @@ type benchSummary struct {
 	AvgNDCGAtK            float64  `json:"avg_ndcg_at_k"`
 	AvgNoiseAtK           float64  `json:"avg_noise_at_k"`
 	AvgStaleHitRate       float64  `json:"avg_stale_hit_rate"`
+	AssertedRecords       int      `json:"asserted_records"`
+	NoiseGated            bool     `json:"noise_gated"`
 	AvgRiskRecall         float64  `json:"avg_risk_recall,omitempty"`
 	AvgToolRecall         float64  `json:"avg_tool_recall,omitempty"`
 	AvgGraphOnRecallAtK   float64  `json:"avg_graph_on_recall_at_k,omitempty"`
@@ -149,6 +153,7 @@ func parseFlags() benchConfig {
 	flag.Float64Var(&cfg.MinRecall, "min-recall", 0.65, "summary quality threshold for recall@k")
 	flag.Float64Var(&cfg.MaxNoise, "max-noise", 0.60, "summary quality threshold for noise@k")
 	flag.IntVar(&cfg.MaxStaleHits, "max-stale-hits", 0, "maximum allowed forbidden/stale hits for a clean run")
+	flag.BoolVar(&cfg.ExitOnFailure, "exit-on-failure", false, "exit non-zero when any summary fails its quality gate")
 	flag.StringVar(&cfg.RealDatasetTag, "real-dataset-tag", "real", "dataset label used for dataset=real")
 	flag.Parse()
 	return cfg
@@ -186,6 +191,7 @@ func run(cfg benchConfig) error {
 	}
 
 	var all []benchRecord
+	var failed []string
 	for _, scenario := range scenarios {
 		records, err := runScenario(cfg, ds, scenario, enc)
 		all = append(all, records...)
@@ -197,6 +203,9 @@ func run(cfg benchConfig) error {
 			return fmt.Errorf("write summary: %w", err)
 		}
 		printSummary(summary)
+		if !summary.QualityPass {
+			failed = append(failed, scenario)
+		}
 	}
 	if len(scenarios) > 1 {
 		summary := summarizeRecords(cfg, "all", all)
@@ -207,6 +216,9 @@ func run(cfg benchConfig) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "results: %s\nmemory: %s\n", cfg.OutPath, ds.Dir)
+	if cfg.ExitOnFailure && len(failed) > 0 {
+		return fmt.Errorf("quality gate failed for: %s", strings.Join(failed, ", "))
+	}
 	return nil
 }
 
@@ -444,6 +456,7 @@ func fillEntryMetrics(record *benchRecord, metrics entryMetrics) {
 	record.HitCount = metrics.HitCount
 	record.ForbidCount = metrics.ForbidCount
 	record.ForbidHitCount = metrics.ForbidHitCount
+	record.NoExpectation = metrics.NoExpectation
 	record.RecallAtK = metrics.RecallAtK
 	record.PrecisionAtK = metrics.PrecisionAtK
 	record.MRR = metrics.MRR
@@ -465,6 +478,13 @@ func fillRouteMetrics(record *benchRecord, query benchQuery) {
 	}
 }
 
+// hasExpectation reports whether the record carries ground truth to score
+// against. Want-less queries still measure latency, but they cannot assert
+// recall, precision, or noise.
+func (record benchRecord) hasExpectation() bool {
+	return record.ExpectedCount > 0 || record.ExpectedRisk > 0 || record.ExpectedTools > 0
+}
+
 func markRecordQuality(record *benchRecord, cfg benchConfig) {
 	record.Clean = record.Error == "" && record.ForbidHitCount <= cfg.MaxStaleHits
 	record.QualityPass = record.Clean
@@ -472,7 +492,10 @@ func markRecordQuality(record *benchRecord, cfg benchConfig) {
 		if record.Scenario == "tidal" {
 			record.QualityPass = record.QualityPass && record.MRR >= cfg.MinRecall
 		} else {
-			record.QualityPass = record.QualityPass && record.RecallAtK >= cfg.MinRecall && record.NoiseAtK <= cfg.MaxNoise
+			record.QualityPass = record.QualityPass && record.RecallAtK >= cfg.MinRecall
+			if noiseGateApplies(*record, cfg.Limit) {
+				record.QualityPass = record.QualityPass && record.NoiseAtK <= cfg.MaxNoise
+			}
 		}
 	}
 	if record.ExpectedRisk > 0 {
@@ -519,20 +542,24 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 	var tidalOnMRR, tidalOffMRR, tidalOnStale, tidalOffStale, tidalOnDuration, tidalOffDuration float64
 	var tidalOnN, tidalOffN int
 	qualityRecords := 0
+	assertedN := 0
 	for _, record := range records {
 		durations = append(durations, record.DurationNS)
 		durationTotal += record.DurationNS
-		recall += record.RecallAtK
-		precision += record.PrecisionAtK
-		mrr += record.MRR
-		ndcg += record.NDCGAtK
-		noise += record.NoiseAtK
-		stale += record.StaleHitRate
+		if record.hasExpectation() {
+			assertedN++
+			recall += record.RecallAtK
+			precision += record.PrecisionAtK
+			mrr += record.MRR
+			ndcg += record.NDCGAtK
+			noise += record.NoiseAtK
+			stale += record.StaleHitRate
+		}
 		summary.ForbidHits += record.ForbidHitCount
 		if record.Error != "" {
 			summary.Errors++
 		}
-		if !record.Clean && record.Scenario != "tidal" {
+		if !record.Clean && !isTidalControl(record) {
 			summary.Clean = false
 		}
 		if record.ExpectedCount > 0 || record.ExpectedRisk > 0 || record.ExpectedTools > 0 {
@@ -570,12 +597,18 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 
 	n := float64(len(records))
 	summary.AvgDurationNS = float64(durationTotal) / n
-	summary.AvgRecallAtK = recall / n
-	summary.AvgPrecisionAtK = precision / n
-	summary.AvgMRR = mrr / n
-	summary.AvgNDCGAtK = ndcg / n
-	summary.AvgNoiseAtK = noise / n
-	summary.AvgStaleHitRate = stale / n
+	summary.AssertedRecords = assertedN
+	// Quality averages only cover records that carry ground truth; want-less
+	// queries have no denominator and must not be averaged in as perfect.
+	if assertedN > 0 {
+		mn := float64(assertedN)
+		summary.AvgRecallAtK = recall / mn
+		summary.AvgPrecisionAtK = precision / mn
+		summary.AvgMRR = mrr / mn
+		summary.AvgNDCGAtK = ndcg / mn
+		summary.AvgNoiseAtK = noise / mn
+		summary.AvgStaleHitRate = stale / mn
+	}
 	if riskN > 0 {
 		summary.AvgRiskRecall = riskRecall / float64(riskN)
 	}
@@ -611,8 +644,12 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 			summary.QualityPass = summary.QualityPass && summary.AvgTidalOnMRR >= cfg.MinRecall && summary.TidalMRRLift >= 0 && summary.TidalStaleRateDelta <= 0
 		} else {
 			candidateRecords := qualityCandidateRecords(records)
-			recallAvg, noiseAvg := averageRecallNoise(candidateRecords)
-			summary.QualityPass = summary.QualityPass && recallAvg >= cfg.MinRecall && noiseAvg <= cfg.MaxNoise
+			recallAvg, noiseAvg, noiseGated := averageRecallNoise(candidateRecords, cfg.Limit)
+			summary.NoiseGated = noiseGated
+			summary.QualityPass = summary.QualityPass && recallAvg >= cfg.MinRecall
+			if noiseGated {
+				summary.QualityPass = summary.QualityPass && noiseAvg <= cfg.MaxNoise
+			}
 		}
 		if riskN > 0 {
 			summary.QualityPass = summary.QualityPass && summary.AvgRiskRecall >= cfg.MinRecall
@@ -645,17 +682,50 @@ func qualityCandidateRecords(records []benchRecord) []benchRecord {
 	return expected
 }
 
-func averageRecallNoise(records []benchRecord) (float64, float64) {
+func averageRecallNoise(records []benchRecord, limit int) (float64, float64, bool) {
 	if len(records) == 0 {
-		return 1, 0
+		return 0, 0, false
 	}
 	var recall, noise float64
+	var noiseN int
 	for _, record := range records {
 		recall += record.RecallAtK
-		noise += record.NoiseAtK
+		if noiseGateApplies(record, limit) {
+			noise += record.NoiseAtK
+			noiseN++
+		}
 	}
-	n := float64(len(records))
-	return recall / n, noise / n
+	recall /= float64(len(records))
+	if noiseN == 0 {
+		return recall, 0, false
+	}
+	return recall, noise / float64(noiseN), true
+}
+
+// noiseGateApplies reports whether noise@k can be judged for this record.
+// noise@k = (results - hits) / results and results are truncated at the limit,
+// so when fewer memories are expected than the limit returns the floor is
+// (limit - want) / limit. With want=1 and limit=6 that floor is 0.83, which
+// makes a 0.60 threshold unreachable no matter how good retrieval is. In that
+// case the threshold would be measuring the limit, not the retrieval, so it is
+// reported as not applicable instead of silently deciding pass or fail.
+func noiseGateApplies(record benchRecord, limit int) bool {
+	if record.ExpectedCount == 0 {
+		return false
+	}
+	if limit > 0 && record.ExpectedCount < limit {
+		return false
+	}
+	return true
+}
+
+// isTidalControl reports whether the record is the tidal control arm. The
+// control arm deliberately keeps stale scoring enabled so the tidal_on arm has
+// something to improve on, and a stale hit there is the baseline rather than a
+// regression. Every other tidal record is held to the same clean bar as the
+// rest of the run; excluding the whole scenario let real stale regressions pass.
+func isTidalControl(record benchRecord) bool {
+	return record.Scenario == "tidal" && record.Mode == "tidal_off"
 }
 
 func percentileDuration(sorted []int64, p float64) int64 {
@@ -691,13 +761,15 @@ func printRecord(record benchRecord) {
 
 func printSummary(summary benchSummary) {
 	fmt.Fprintf(os.Stderr,
-		"summary scenario=%s records=%d avg_duration=%.3fms recall=%.2f precision=%.2f noise=%.2f forbid_hits=%d clean=%t quality=%t\n",
+		"summary scenario=%s records=%d asserted=%d avg_duration=%.3fms recall=%.2f precision=%.2f noise=%.2f noise_gated=%t forbid_hits=%d clean=%t quality=%t\n",
 		summary.Scenario,
 		summary.Records,
+		summary.AssertedRecords,
 		summary.AvgDurationNS/float64(time.Millisecond),
 		summary.AvgRecallAtK,
 		summary.AvgPrecisionAtK,
 		summary.AvgNoiseAtK,
+		summary.NoiseGated,
 		summary.ForbidHits,
 		summary.Clean,
 		summary.QualityPass,

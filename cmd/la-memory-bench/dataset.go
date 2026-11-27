@@ -451,6 +451,7 @@ func syntheticQueries() []benchQuery {
 			ID:        "scale_anchor",
 			Scenario:  "scale",
 			Text:      "scale benchmark anchor",
+			WantIDs:   []string{"mem_bench_scale_anchor"},
 			ForbidIDs: []string{"mem_bench_old_allergy", "mem_bench_expired_location", "mem_bench_future_location"},
 		},
 		{
