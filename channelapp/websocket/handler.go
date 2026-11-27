@@ -54,6 +54,9 @@ type queuedRun struct {
 	// parallel is set only after the main model's dependency decision. It lets
 	// independent same-session work overlap while ordinary turns remain FIFO.
 	parallel bool
+	// waiting is set when the model named a dependency. An idle session must
+	// not treat that as permission to start the dependent step.
+	waiting bool
 	// awaitResume is set only for work discovered after a process restart. It
 	// remains visible and queryable, but a reconnect or a new chat cannot start
 	// it without an explicit ResumeSession call.
@@ -113,11 +116,13 @@ type AgentHandler struct {
 	pending       map[string]context.CancelFunc // sessionID → cancel
 	done          map[string]chan struct{}      // sessionID → handler goroutine completion
 	runners       map[string]*sessionRunner
+	cancelledWork map[string][]string
 	store         *runStore
 	eventSink     func(string, *Message)
 	lucky         *luckycollector.Lucky
 	uiTrees       map[string]map[string]uiTreeEntry
 	charts        *chartLifecycle
+	taskWaits     map[string]string
 	pendingCharts map[string]pendingChartApply
 	started       bool
 	replays       map[*Client]*clientReplayLock
@@ -138,8 +143,9 @@ func NewAgentHandler(a agentRuntime) *AgentHandler {
 		agent:   a,
 		pending: make(map[string]context.CancelFunc),
 		done:    make(map[string]chan struct{}),
-		runners: make(map[string]*sessionRunner),
-		store:   newRunStore(storeRoot),
+		runners:       make(map[string]*sessionRunner),
+		cancelledWork: map[string][]string{},
+		store:         newRunStore(storeRoot),
 		lucky:   luckycollector.NewLucky(),
 		uiTrees: make(map[string]map[string]uiTreeEntry),
 		charts:  newChartLifecycle(chartRoot),
@@ -179,20 +185,32 @@ func (h *AgentHandler) taskCanRunParallel(sessionID, next string) bool {
 		for _, run := range runner.activeRuns {
 			add(run)
 		}
-		for _, run := range runner.queue {
-			add(run)
-		}
 	}
 	cancelled := map[string]bool{}
 	if runner != nil {
 		for id, stopped := range runner.cancelledRuns {
-			if stopped {
-				cancelled[id] = true
+			if !stopped {
+				continue
+			}
+			cancelled[id] = true
+			active = append(active, id)
+			for _, run := range append(append([]*queuedRun{}, runner.queue...), runner.active) {
+				if run != nil && run.id == id {
+					text := strings.TrimSpace(run.data.Message)
+					if text != "" {
+						cancelled[text] = true
+						active = append(active, text)
+					}
+				}
 			}
 		}
 	}
-	busy := runnerHasActive(runner)
+	remembered := append([]string{}, h.cancelledWork[sessionID]...)
 	h.mu.Unlock()
+	for _, item := range remembered {
+		active = append(active, item)
+		cancelled[item] = true
+	}
 	if len(active) == 0 {
 		return true
 	}
@@ -201,23 +219,69 @@ func (h *AgentHandler) taskCanRunParallel(sessionID, next string) bool {
 		// No planner means wait. Keyword overlap must not release the next task.
 		return false
 	}
-	if busy {
-		// An active turn already occupies the session. Wait for it instead of
-		// asking the planner, so admission cannot open another provider call.
-		return false
-	}
 	planCtx, planCancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer planCancel()
 	plan, err := planner.PlanTaskRelation(planCtx, active, next)
 	if err != nil || !plan.Parallel {
+		h.rememberTaskWait(sessionID, next, plan)
 		return false
 	}
 	for _, dep := range plan.DependsOn {
-		if cancelled[dep] {
+		if cancelled[dep] || cancelled[strings.TrimSpace(dep)] {
+			h.rememberTaskWait(sessionID, next, plan)
 			return false
 		}
 	}
-	return len(plan.DependsOn) == 0
+	if len(plan.DependsOn) != 0 {
+		h.rememberTaskWait(sessionID, next, plan)
+		return false
+	}
+	return true
+}
+
+func (h *AgentHandler) rememberTaskWait(sessionID, next string, plan agent.TaskRelationPlan) {
+	if h == nil {
+		return
+	}
+	reason := strings.TrimSpace(plan.Reason)
+	if reason == "" {
+		reason = "dependent work stays queued"
+	}
+	waiting := strings.Join(plan.DependsOn, ",")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.taskWaits == nil {
+		h.taskWaits = map[string]string{}
+	}
+	if waiting == "" {
+		if runner := h.runners[sessionID]; runner != nil && runner.active != nil {
+			waiting = strings.TrimSpace(runner.active.data.Message)
+		}
+	}
+	if waiting == "" {
+		return
+	}
+	h.taskWaits[sessionID+"\n"+strings.TrimSpace(next)] = "waiting for " + waiting + ": " + reason
+}
+
+func (h *AgentHandler) taskWaitMessage(sessionID, next string) string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.taskWaits[sessionID+"\n"+strings.TrimSpace(next)]
+}
+
+func (h *AgentHandler) takeTaskWait(sessionID, next string) string {
+	message := h.taskWaitMessage(sessionID, next)
+	if message == "" {
+		return ""
+	}
+	h.mu.Lock()
+	delete(h.taskWaits, sessionID+"\n"+strings.TrimSpace(next))
+	h.mu.Unlock()
+	return message
 }
 
 // staleRunTTL is how long a queued or running websocket checkpoint may sit
@@ -799,16 +863,18 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 		run.session = h.agent.Sessions().Ensure(client.SessionID)
 	}
 	run.parallel = h.taskCanRunParallel(client.SessionID, data.Message)
+	run.waiting = !run.parallel && h.taskWaitMessage(client.SessionID, data.Message) != ""
 	h.mu.Lock()
 	runner := h.runners[client.SessionID]
 	if runner == nil {
 		runner = &sessionRunner{}
 		h.runners[client.SessionID] = runner
 	}
+	ensureRunnerMaps(runner)
 	wasBusy := runner.active != nil || len(runner.activeRuns) > 0
 	if !wasBusy {
 		for _, queued := range runner.queue {
-			if !queued.awaitResume {
+			if queued != nil && !queued.awaitResume && !runner.cancelledRuns[queued.id] {
 				wasBusy = true
 				break
 			}
@@ -816,16 +882,20 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 	}
 	runner.queue = append(runner.queue, run)
 	h.mu.Unlock()
+	queueMessage := map[bool]string{true: "message queued", false: "processing your message"}[wasBusy]
+	if !run.parallel {
+		if waited := h.takeTaskWait(client.SessionID, data.Message); waited != "" {
+			queueMessage = waited
+		}
+	}
 	queued, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
 		State:   "queued",
-		Message: map[bool]string{true: "message queued", false: "processing your message"}[wasBusy],
+		Message: queueMessage,
 	})
 	queued.ParentID = run.parentID
 	queued.RunID = run.id
 	h.emit(client, client.SessionID, run.id, queued)
-	if !wasBusy {
-		h.startNext(client.SessionID)
-	}
+	h.startNext(client.SessionID)
 }
 
 func (h *AgentHandler) collectLuckyChat(client *Client, msg *Message, data ChatData) bool {
@@ -864,7 +934,7 @@ func (h *AgentHandler) startNext(sessionID string) {
 	busy := runnerHasActive(runner)
 	index := -1
 	for i, candidate := range runner.queue {
-		if !candidate.awaitResume && !candidate.held && (!busy || candidate.parallel) {
+		if !candidate.awaitResume && !candidate.held && !candidate.waiting && (!busy || candidate.parallel) {
 			index = i
 			break
 		}
@@ -927,6 +997,12 @@ func (h *AgentHandler) finishRun(sessionID string, run *queuedRun, err error) {
 		return
 	}
 	wasCancelled := runner.cancelledRuns[run.id] || (runner.active == run && runner.cancelled)
+	if wasCancelled {
+		if h.cancelledWork == nil {
+			h.cancelledWork = map[string][]string{}
+		}
+		h.cancelledWork[sessionID] = append(h.cancelledWork[sessionID], run.id, strings.TrimSpace(run.data.Message))
+	}
 	persistErr := run.persistErr
 	h.mu.Unlock()
 	state := "completed"
