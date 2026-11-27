@@ -87,8 +87,9 @@ type Server struct {
 	wsHandler *websocket.AgentHandler
 
 	// v0.22.0: 多 Agent 协作
-	collabRegistry  *collab.Registry
-	delegateManager *collab.DelegateManager
+	collabRegistry      *collab.Registry
+	delegateManager     *collab.DelegateManager
+	delegateSubmissions map[string]delegateSubmission
 
 	// v0.24.0: Workflow Engine
 	workflowEngine *workflow.WorkflowEngine
@@ -1317,8 +1318,17 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			s.wsHandler.CancelSession(sess.ID)
 		}
 		s.cancelChat(sess.ID)
-		if deleter, ok := any(s.agent).(interface{ DeleteSession(string) bool }); ok {
-			deleter.DeleteSession(sess.ID)
+		if deleter, ok := any(s.agent).(interface {
+			DeleteSession(string) bool
+			SessionCleanupError() error
+		}); ok {
+			_ = deleter.DeleteSession(sess.ID)
+			if err := deleter.SessionCleanupError(); err != nil {
+				s.sendError(w, "delete session cleanup failed", http.StatusConflict, err.Error())
+				return
+			}
+		} else if deleter, ok := any(s.agent).(interface{ DeleteSession(string) bool }); ok {
+			_ = deleter.DeleteSession(sess.ID)
 		} else {
 			s.agent.CancelSession(sess.ID)
 		}

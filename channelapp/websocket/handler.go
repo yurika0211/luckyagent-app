@@ -58,6 +58,15 @@ type queuedRun struct {
 	// remains visible and queryable, but a reconnect or a new chat cannot start
 	// it without an explicit ResumeSession call.
 	awaitResume bool
+	// held is set when the user stopped this run. Restart and re-entry must
+	// not release it until ResumeSession is called for this run.
+	held bool
+	// child marks a delegated task that shares the session runner. Stopping
+	// the main task must not cancel it.
+	child bool
+	// resuming is set for the one continue that has already started this run.
+	// A second continue returns failure and does not start another copy.
+	resuming bool
 	client      *Client
 	// Bind an accepted turn to its original handle. A deleted session ID may
 	// later be reused, but queued work must not create or adopt that new session.
@@ -173,21 +182,41 @@ func (h *AgentHandler) taskCanRunParallel(sessionID, next string) bool {
 			add(run)
 		}
 	}
+	cancelled := map[string]bool{}
+	if runner != nil {
+		for id, stopped := range runner.cancelledRuns {
+			if stopped {
+				cancelled[id] = true
+			}
+		}
+	}
+	busy := runnerHasActive(runner)
 	h.mu.Unlock()
 	if len(active) == 0 {
 		return true
 	}
-	// Admission stays local and side-effect free. Explicit dependency language
-	// waits; otherwise independent work may overlap. Hosts that have a model
-	// planner can replace this decision through taskRelationPlanner without
-	// adding a second provider call to ordinary queue admission.
-	lower := strings.ToLower(strings.TrimSpace(next))
-	for _, marker := range []string{"after", "depends", "based on", "依赖", "基于", "先完成", "must not", "deleted", "cancel"} {
-		if strings.Contains(lower, marker) {
+	planner, ok := h.agent.(taskRelationPlanner)
+	if !ok || planner == nil {
+		// No planner means wait. Keyword overlap must not release the next task.
+		return false
+	}
+	if busy {
+		// An active turn already occupies the session. Wait for it instead of
+		// asking the planner, so admission cannot open another provider call.
+		return false
+	}
+	planCtx, planCancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer planCancel()
+	plan, err := planner.PlanTaskRelation(planCtx, active, next)
+	if err != nil || !plan.Parallel {
+		return false
+	}
+	for _, dep := range plan.DependsOn {
+		if cancelled[dep] {
 			return false
 		}
 	}
-	return true
+	return len(plan.DependsOn) == 0
 }
 
 // staleRunTTL is how long a queued or running websocket checkpoint may sit
@@ -219,6 +248,10 @@ func (h *AgentHandler) Start() {
 			Attachments: persisted.Attachments,
 		}
 		run := &queuedRun{id: persisted.ID, parentID: persisted.ParentID, data: data, awaitResume: true}
+		if strings.HasPrefix(persisted.Message, heldRunPrefix) {
+			run.held = true
+			run.data.Message = strings.TrimPrefix(run.data.Message, heldRunPrefix)
+		}
 		if h.agent != nil && h.agent.Sessions() != nil {
 			run.session = h.agent.Sessions().Ensure(persisted.SessionID)
 		}
@@ -255,18 +288,56 @@ func (h *AgentHandler) ResumeSession(sessionID, runID string) bool {
 	}
 	resumed := false
 	for _, run := range runner.queue {
-		if !run.awaitResume || (runID != "" && run.id != runID) {
+		if runID != "" && run.id != runID {
 			continue
 		}
+		if !run.awaitResume && !run.held {
+			continue
+		}
+		if run.held {
+			h.mu.Unlock()
+			note, blocked := h.releaseHeldWorktree(sessionID, run.id)
+			h.mu.Lock()
+			if runner = h.runners[sessionID]; runner == nil {
+				h.mu.Unlock()
+				return false
+			}
+			if blocked {
+				h.mu.Unlock()
+				h.emit(run.client, sessionID, run.id, terminalStatus(sessionID, run.parentID, run.id, "conflict: "+note))
+				return false
+			}
+		}
+		if run.resuming {
+			h.mu.Unlock()
+			return false
+		}
+		run.resuming = true
 		run.awaitResume = false
+		run.held = false
 		resumed = true
 		break
 	}
 	h.mu.Unlock()
-	if resumed {
-		h.startNext(sessionID)
+	if !resumed {
+		return false
 	}
-	return resumed
+	h.startNext(sessionID)
+	h.mu.Lock()
+	if runner = h.runners[sessionID]; runner != nil {
+		for _, run := range runner.queue {
+			if runID == "" || run.id == runID {
+				run.resuming = false
+			}
+		}
+		for _, run := range runner.activeRuns {
+			if run != nil && (runID == "" || run.id == runID) {
+				run.resuming = false
+			}
+		}
+	}
+	h.mu.Unlock()
+	return true
 }
 
 // EnqueueBackgroundTaskResult hands a completed background delegate back to
@@ -280,14 +351,30 @@ func (h *AgentHandler) EnqueueBackgroundTaskResult(sessionID, taskID, descriptio
 		return false
 	}
 	runID := "handoff-" + taskID
+	failed := handoffReportsFailure(result)
 	message := fmt.Sprintf("A background delegated task has reached a terminal state. Review its evidence in the original session and report the result; do not claim success without checking failures or missing deliverables.\nTask: %s\nResult:\n%s", strings.TrimSpace(description), trimRunMessage(result, 12000))
-	run := &queuedRun{id: runID, parentID: taskID, data: ChatData{Message: message, Stream: true}, resume: false}
+	if failed {
+		message = fmt.Sprintf("A background delegated task failed. Report the failure. Do not describe this task as done or successful.\nTask: %s\nError:\n%s", strings.TrimSpace(description), trimRunMessage(result, 12000))
+	}
+	run := &queuedRun{id: runID, parentID: taskID, data: ChatData{Message: message, Stream: true}, resume: false, parallel: false, child: true}
 	if sessions := h.agent.Sessions(); sessions != nil {
 		run.session, _ = sessions.Get(sessionID)
 		if run.session == nil {
-			run.session = sessions.Ensure(sessionID)
+			return false
 		}
 	}
+	h.mu.Lock()
+	runner := h.runners[sessionID]
+	busy := runnerHasActive(runner)
+	if busy && runner != nil {
+		for _, queued := range runner.queue {
+			if queued.id == runID {
+				h.mu.Unlock()
+				return true
+			}
+		}
+	}
+	h.mu.Unlock()
 	stored, created, err := h.store.CreateRun(persistedRun{
 		ID: runID, SessionID: sessionID, ParentID: taskID, Message: message,
 		Stream: true, State: "queued", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
@@ -296,18 +383,23 @@ func (h *AgentHandler) EnqueueBackgroundTaskResult(sessionID, taskID, descriptio
 		return created && stored.ID == runID
 	}
 	h.mu.Lock()
-	runner := h.runners[sessionID]
+	runner = h.runners[sessionID]
 	if runner == nil {
 		runner = &sessionRunner{}
 		h.runners[sessionID] = runner
 	}
 	runner.queue = append(runner.queue, run)
-	wasBusy := runnerHasActive(runner)
+	busy = runnerHasActive(runner)
 	h.mu.Unlock()
-	if !wasBusy {
+	if !busy {
 		h.startNext(sessionID)
 	}
 	return true
+}
+
+func handoffReportsFailure(result string) bool {
+	lower := strings.ToLower(result)
+	return strings.Contains(lower, "status=failed") || strings.Contains(lower, "\"status\":\"failed\"") || strings.Contains(lower, "error=")
 }
 
 func trimRunMessage(value string, limit int) string {
@@ -771,7 +863,7 @@ func (h *AgentHandler) startNext(sessionID string) {
 	busy := runnerHasActive(runner)
 	index := -1
 	for i, candidate := range runner.queue {
-		if !candidate.awaitResume && (!busy || candidate.parallel) {
+		if !candidate.awaitResume && !candidate.held && (!busy || candidate.parallel) {
 			index = i
 			break
 		}
@@ -870,6 +962,11 @@ func (h *AgentHandler) finishRun(sessionID string, run *queuedRun, err error) {
 		delete(h.pending, sessionID)
 	}
 	if len(runner.queue) == 0 && !runnerHasActive(runner) {
+		if done := h.done[sessionID]; done != nil {
+			close(done)
+			delete(h.done, sessionID)
+		}
+	} else if runner.cancelled && !runnerHasActive(runner) {
 		if done := h.done[sessionID]; done != nil {
 			close(done)
 			delete(h.done, sessionID)
@@ -1217,6 +1314,12 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 		}
 		switch evt.Type {
 		case agent.ChatEventThinking:
+			if evt.Name == "skill_use" && strings.TrimSpace(evt.Content) != "" {
+				msg, _ := NewMessage(TypeReasoning, client.SessionID, ReasoningData{Summary: evt.Content, Content: evt.Content, Stage: "skill_use"})
+				msg.ParentID = parentID
+				h.emit(client, client.SessionID, runID, msg)
+				continue
+			}
 			if evt.TaskID != "" && runID != "" {
 				if err := h.store.UpdateRun(client.SessionID, runID, func(record *persistedRun) { record.TaskID = evt.TaskID }); err != nil {
 					h.failPersistence(client, client.SessionID, runID, parentID, err)
@@ -1747,6 +1850,9 @@ func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 			cancelled = append(cancelled, runner.active)
 		}
 		for id, active := range runner.activeRuns {
+			if active != nil && active.child {
+				continue
+			}
 			if active != runner.active {
 				cancelled = append(cancelled, active)
 			}
@@ -1760,12 +1866,6 @@ func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 		}
 		queued = append(queued, runner.queue...)
 		runner.queue = nil
-		if !runnerHasActive(runner) {
-			if done := h.done[sessionID]; done != nil {
-				close(done)
-				delete(h.done, sessionID)
-			}
-		}
 	}
 	if cancel := h.pending[sessionID]; cancel != nil {
 		cancels = append(cancels, cancel)
@@ -1775,13 +1875,81 @@ func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 	for _, cancel := range cancels {
 		cancel()
 	}
-	for _, run := range queued {
-		if err := h.store.UpdateRun(sessionID, run.id, func(record *persistedRun) { record.State = "cancelled" }); err != nil {
+	for _, run := range append(cancelled, queued...) {
+		if err := h.store.UpdateRun(sessionID, run.id, func(record *persistedRun) {
+			record.State = "cancelled"
+			record.Message = heldRunPrefix + strings.TrimPrefix(record.Message, heldRunPrefix)
+		}); err != nil {
 			h.failPersistence(run.client, sessionID, run.id, run.parentID, err)
 		}
 	}
 	cancelled = append(cancelled, queued...)
 	return cancelled
+}
+
+const heldRunPrefix = "\x00held "
+
+func (h *AgentHandler) heldPath(sessionID, runID string) string {
+	root := ""
+	if h != nil && h.store != nil {
+		root = h.store.root
+	}
+	if root == "" {
+		if provider, ok := h.agent.(runtimeConfigProvider); ok && provider.Config() != nil {
+			root = filepath.Join(provider.Config().HomeDir(), "runtime", "websocket")
+		}
+	}
+	if root == "" {
+		root = os.TempDir()
+	}
+	return filepath.Join(root, "held", sessionID+"-"+runID)
+}
+
+func (h *AgentHandler) markRunHeld(sessionID, runID string) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(runID) == "" {
+		return
+	}
+	path := h.heldPath(sessionID, runID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte("held\n"), 0o600)
+}
+
+func (h *AgentHandler) runHeld(sessionID, runID string) bool {
+	_, err := os.Stat(h.heldPath(sessionID, runID))
+	return err == nil
+}
+
+func (h *AgentHandler) clearRunHeld(sessionID, runID string) {
+	_ = os.Remove(h.heldPath(sessionID, runID))
+}
+
+// releaseHeldWorktree merges a retained child checkout before a held run
+// continues. A conflict stops the resume and tells the caller.
+func (h *AgentHandler) releaseHeldWorktree(sessionID, runID string) (string, bool) {
+	reviewer, ok := h.agent.(interface {
+		ReviewDelegatedTask(context.Context, string, map[string]any) (string, error)
+	})
+	if !ok || reviewer == nil {
+		h.clearRunHeld(sessionID, runID)
+		return "", false
+	}
+	raw, err := reviewer.ReviewDelegatedTask(context.Background(), sessionID, map[string]any{
+		"task_id": runID, "action": "merge",
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "task not found") || strings.Contains(err.Error(), "no retained") {
+			h.clearRunHeld(sessionID, runID)
+			return "", false
+		}
+		return err.Error(), true
+	}
+	if strings.Contains(raw, `"conflict":true`) {
+		return raw, true
+	}
+	h.clearRunHeld(sessionID, runID)
+	return raw, false
 }
 
 // PendingCount 返回进行中的请求数
