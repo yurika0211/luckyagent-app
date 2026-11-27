@@ -536,6 +536,15 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  proactive.kernel_learning_enabled: %t\n", proactiveKernelLearningEnabled(cfg))
 	fmt.Printf("  proactive.kernel_learning_rate: %.2f\n", cfg.Proactive.KernelLearningRate)
 	fmt.Printf("  proactive.kernel_min_samples: %d\n", cfg.Proactive.KernelMinSamples)
+	// Compaction knobs resolve through CompactSettings so `lh config list` shows
+	// the values the compaction path actually uses (#531 验收 1).
+	compact := cfg.Context.CompactSettings()
+	fmt.Printf("  context.compact_background: %t\n", compact.Background)
+	fmt.Printf("  context.compact_keep_tokens: %d\n", compact.KeepTokens)
+	fmt.Printf("  context.compact_precompute_lead_tokens: %d\n", compact.PrecomputeLeadTokens)
+	fmt.Printf("  context.compact_precompute_max_failures: %d\n", compact.PrecomputeMaxFailures)
+	fmt.Printf("  context.compact_cache_margin_seconds: %d\n", compact.CacheMarginSeconds)
+	fmt.Printf("  context.compact_chunk_fallback: %t\n", compact.ChunkFallback)
 	return nil
 }
 
