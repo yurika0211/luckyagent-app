@@ -48,6 +48,47 @@ func TestEnqueueBackgroundTaskResultIsIdempotentAndRunsInOwnerSession(t *testing
 	}
 }
 
+func TestSessionBDoesNotSeeSessionATaskResult(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.Ensure("owner-a")
+	mgr.Ensure("owner-b")
+	calls := make(chan string, 2)
+	h := NewAgentHandler(&stubAgentRuntime{
+		sessions: mgr, tools: tool.NewRegistry(),
+		chatStreamInputFn: func(_ context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			calls <- sessionID + "\n" + input.RoutingText
+			ch := make(chan agent.ChatEvent)
+			close(ch)
+			return ch, nil
+		},
+	})
+	if !h.EnqueueBackgroundTaskResult("owner-a", "task-a", "inspect A", "result only for A") {
+		t.Fatal("session A handoff was not queued")
+	}
+	select {
+	case got := <-calls:
+		if !strings.HasPrefix(got, "owner-a\n") || !strings.Contains(got, "result only for A") {
+			t.Fatalf("session A did not receive its own result: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session A handoff did not run")
+	}
+	if !h.EnqueueBackgroundTaskResult("owner-b", "task-b", "inspect B", "result only for B") {
+		t.Fatal("session B handoff was not queued")
+	}
+	select {
+	case got := <-calls:
+		if strings.Contains(got, "result only for A") || !strings.HasPrefix(got, "owner-b\n") {
+			t.Fatalf("session B saw session A's result: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session B handoff did not run")
+	}
+}
+
 func TestHandoffWaitsUntilCurrentReplyFinishes(t *testing.T) {
 	mgr, err := session.NewManager(t.TempDir())
 	if err != nil {
@@ -146,31 +187,54 @@ func TestStopMainDoesNotStopChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.Ensure("owner")
-	childDone := make(chan struct{})
+	mainCtx, mainCancel := context.WithCancel(context.Background())
+	childCtx, childCancel := context.WithCancel(context.Background())
 	h := NewAgentHandler(&stubAgentRuntime{sessions: mgr, tools: tool.NewRegistry()})
 	h.mu.Lock()
 	h.runners["owner"] = &sessionRunner{
 		active: &queuedRun{id: "main", data: ChatData{Message: "main"}},
+		cancel: mainCancel,
 		activeRuns: map[string]*queuedRun{
-			"main": {id: "main"},
+			"main":    {id: "main", data: ChatData{Message: "main"}},
+			"child-1": {id: "child-1", child: true, data: ChatData{Message: "child still working"}},
 		},
-		cancels: map[string]context.CancelFunc{"main": func() { close(childDone) }},
+		cancels: map[string]context.CancelFunc{
+			"main":    mainCancel,
+			"child-1": childCancel,
+		},
 	}
 	h.mu.Unlock()
 	stopped := h.cancelSession("owner")
-	var stoppedChild bool
+	var stoppedMain, stoppedChild bool
 	for _, run := range stopped {
+		if run.id == "main" {
+			stoppedMain = true
+		}
 		if run.id == "child-1" {
 			stoppedChild = true
 		}
+	}
+	if !stoppedMain {
+		t.Fatal("stopping the session did not stop the main task")
 	}
 	if stoppedChild {
 		t.Fatal("stopping the main task stopped the child")
 	}
 	select {
-	case <-childDone:
+	case <-mainCtx.Done():
 	case <-time.After(time.Second):
-		t.Fatal("main cancel did not reach the main run")
+		t.Fatal("main task is still running")
+	}
+	select {
+	case <-childCtx.Done():
+		t.Fatal("child task was cancelled with the main task")
+	default:
+	}
+	h.mu.Lock()
+	child := h.runners["owner"].activeRuns["child-1"]
+	h.mu.Unlock()
+	if child == nil || !child.child {
+		t.Fatal("child task is no longer running")
 	}
 }
 

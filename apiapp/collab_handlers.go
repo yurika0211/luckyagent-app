@@ -103,13 +103,11 @@ func (s *Server) handleAgentsDelegate(w http.ResponseWriter, r *http.Request) {
 			s.sendError(w, "task result is not ready", http.StatusConflict, existing.taskID)
 			return
 		}
-		if task.State != collab.TaskCompleted && task.State != collab.TaskFailed && task.State != collab.TaskCancelled {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(task)
-			return
-		}
-		s.sendJSON(w, http.StatusOK, task)
+		// A repeated submission returns the original task. It is not a new
+		// acceptance, and an unfinished task is not a successful result.
+		s.sendJSON(w, http.StatusOK, map[string]any{
+			"task": task, "original": true, "ready": delegateTaskReady(task),
+		})
 		return
 	}
 	recorder := &delegateCapture{ResponseWriter: w}
@@ -148,7 +146,39 @@ func (c *delegateCapture) Write(p []byte) (int, error) {
 	c.body.Write(p)
 	return c.ResponseWriter.Write(p)
 }
+func delegateTaskReady(task *collab.CollabTask) bool {
+	if task == nil {
+		return false
+	}
+	switch task.State {
+	case collab.TaskCompleted, collab.TaskFailed, collab.TaskCancelled, collab.TaskTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) handleAgentsTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || s.delegateManager == nil {
+		s.resourceController().HandleAgentsTask(w, r)
+		return
+	}
+	taskID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if taskID == "" {
+		s.resourceController().HandleAgentsTask(w, r)
+		return
+	}
+	task, ok := s.delegateManager.GetTask(taskID)
+	if !ok {
+		s.resourceController().HandleAgentsTask(w, r)
+		return
+	}
+	if !delegateTaskReady(task) {
+		s.sendJSON(w, http.StatusAccepted, map[string]any{
+			"task": task, "ready": false, "status": "not_ready",
+		})
+		return
+	}
 	s.resourceController().HandleAgentsTask(w, r)
 }
 func (s *Server) handleAgentsTasks(w http.ResponseWriter, r *http.Request) {

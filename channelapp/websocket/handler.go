@@ -61,6 +61,12 @@ type queuedRun struct {
 	// held is set when the user stopped this run. Restart and re-entry must
 	// not release it until ResumeSession is called for this run.
 	held bool
+	// child marks a delegated task that shares the session runner. Stopping
+	// the main task must not cancel it.
+	child bool
+	// resuming is set for the one continue that has already started this run.
+	// A second continue returns failure and does not start another copy.
+	resuming bool
 	client      *Client
 	// Bind an accepted turn to its original handle. A deleted session ID may
 	// later be reused, but queued work must not create or adopt that new session.
@@ -302,16 +308,36 @@ func (h *AgentHandler) ResumeSession(sessionID, runID string) bool {
 				return false
 			}
 		}
+		if run.resuming {
+			h.mu.Unlock()
+			return false
+		}
+		run.resuming = true
 		run.awaitResume = false
 		run.held = false
 		resumed = true
 		break
 	}
 	h.mu.Unlock()
-	if resumed {
-		h.startNext(sessionID)
+	if !resumed {
+		return false
 	}
-	return resumed
+	h.startNext(sessionID)
+	h.mu.Lock()
+	if runner = h.runners[sessionID]; runner != nil {
+		for _, run := range runner.queue {
+			if runID == "" || run.id == runID {
+				run.resuming = false
+			}
+		}
+		for _, run := range runner.activeRuns {
+			if run != nil && (runID == "" || run.id == runID) {
+				run.resuming = false
+			}
+		}
+	}
+	h.mu.Unlock()
+	return true
 }
 
 // EnqueueBackgroundTaskResult hands a completed background delegate back to
@@ -330,7 +356,7 @@ func (h *AgentHandler) EnqueueBackgroundTaskResult(sessionID, taskID, descriptio
 	if failed {
 		message = fmt.Sprintf("A background delegated task failed. Report the failure. Do not describe this task as done or successful.\nTask: %s\nError:\n%s", strings.TrimSpace(description), trimRunMessage(result, 12000))
 	}
-	run := &queuedRun{id: runID, parentID: taskID, data: ChatData{Message: message, Stream: true}, resume: false, parallel: false}
+	run := &queuedRun{id: runID, parentID: taskID, data: ChatData{Message: message, Stream: true}, resume: false, parallel: false, child: true}
 	if sessions := h.agent.Sessions(); sessions != nil {
 		run.session, _ = sessions.Get(sessionID)
 		if run.session == nil {
@@ -1824,6 +1850,9 @@ func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 			cancelled = append(cancelled, runner.active)
 		}
 		for id, active := range runner.activeRuns {
+			if active != nil && active.child {
+				continue
+			}
 			if active != runner.active {
 				cancelled = append(cancelled, active)
 			}

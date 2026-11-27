@@ -36,7 +36,7 @@ func TestHTTPDelegateSubmissionDedup(t *testing.T) {
 	}
 	payload := map[string]any{
 		"submission_id": "sub-1", "mode": "parallel", "description": "notes",
-		"input": "hello", "agent_ids": []string{"agent-1"}, "parent_session_id": sess.ID, "timeout": 5,
+		"input": "hello", "agent_ids": []string{"agent-1"}, "parent_session_id": sess.ID, "timeout": 30000000000,
 	}
 	first := postDelegate(t, s, payload)
 	if first.Code != http.StatusAccepted {
@@ -47,15 +47,22 @@ func TestHTTPDelegateSubmissionDedup(t *testing.T) {
 		t.Fatalf("first body: %s err=%v", first.Body.String(), err)
 	}
 	again := postDelegate(t, s, payload)
-	if again.Code != http.StatusAccepted && again.Code != http.StatusOK {
+	if again.Code != http.StatusOK {
 		t.Fatalf("retry status %d body %s", again.Code, again.Body.String())
 	}
-	var retried collab.CollabTask
+	var retried struct {
+		Task     collab.CollabTask `json:"task"`
+		Original bool              `json:"original"`
+		Ready    bool              `json:"ready"`
+	}
 	if err := json.Unmarshal(again.Body.Bytes(), &retried); err != nil {
 		t.Fatal(err)
 	}
-	if retried.ID != created.ID {
-		t.Fatalf("retry created %s, original %s", retried.ID, created.ID)
+	if !retried.Original || retried.Task.ID != created.ID {
+		t.Fatalf("retry created %s, original %s body %s", retried.Task.ID, created.ID, again.Body.String())
+	}
+	if retried.Ready || delegateResultReady(retried.Task.State) {
+		t.Fatalf("unfinished retry looked ready: %s", again.Body.String())
 	}
 	if len(s.delegateManager.ListTasks()) != 1 {
 		t.Fatalf("tasks=%d", len(s.delegateManager.ListTasks()))
@@ -92,14 +99,33 @@ func TestHTTPDelegateSubmissionDedup(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("delegate did not start")
 	}
-	notReady := postDelegate(t, s, payload)
-	if notReady.Code == http.StatusOK {
-		var done collab.CollabTask
-		_ = json.Unmarshal(notReady.Body.Bytes(), &done)
-		if done.State != collab.TaskCompleted && done.State != collab.TaskFailed {
-			t.Fatalf("unfinished retry looked ready: %s", notReady.Body.String())
-		}
+	notReady := getDelegateTask(t, s, created.ID)
+	if notReady.Code != http.StatusAccepted {
+		t.Fatalf("result status %d body %s", notReady.Code, notReady.Body.String())
 	}
+	var pending struct {
+		Ready  bool              `json:"ready"`
+		Status string            `json:"status"`
+		Task   collab.CollabTask `json:"task"`
+	}
+	if err := json.Unmarshal(notReady.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.Ready || pending.Status != "not_ready" || pending.Task.ID != created.ID || delegateResultReady(pending.Task.State) {
+		t.Fatalf("unfinished result looked ready: %s", notReady.Body.String())
+	}
+}
+
+func delegateResultReady(state collab.TaskState) bool {
+	return state == collab.TaskCompleted || state == collab.TaskFailed || state == collab.TaskCancelled || state == collab.TaskTimeout
+}
+
+func getDelegateTask(t *testing.T, s *Server, taskID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/task?id="+taskID, nil)
+	w := httptest.NewRecorder()
+	s.handleAgentsTask(w, req)
+	return w
 }
 
 func postDelegate(t *testing.T, s *Server, payload map[string]any) *httptest.ResponseRecorder {

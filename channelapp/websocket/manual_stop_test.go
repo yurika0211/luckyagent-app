@@ -111,3 +111,55 @@ func TestContinueStopsOnWorktreeConflict(t *testing.T) {
 	case <-time.After(80 * time.Millisecond):
 	}
 }
+
+func TestSecondContinueDoesNotStartAnotherRun(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	starts := 0
+	runtime := &stubAgentRuntime{
+		sessions: mgr, tools: tool.NewRegistry(),
+		chatStreamInputFn: func(context.Context, string, agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			starts++
+			entered <- struct{}{}
+			ch := make(chan agent.ChatEvent, 1)
+			go func() {
+				<-release
+				ch <- agent.ChatEvent{Type: agent.ChatEventDone}
+				close(ch)
+			}()
+			return ch, nil
+		},
+	}
+	h := NewAgentHandler(runtime)
+	h.store = newRunStore(t.TempDir())
+	now := time.Now().UTC()
+	if err := h.store.UpsertRun(persistedRun{
+		ID: "held-run", SessionID: "sess", ParentID: "held-run",
+		Message: "\x00held continue once", Stream: true, State: "running", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Start()
+	if !h.ResumeSession("sess", "held-run") {
+		t.Fatal("first continue did not release the held run")
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first continue did not start")
+	}
+	if h.ResumeSession("sess", "held-run") {
+		t.Fatal("second continue succeeded while the first was still running")
+	}
+	if starts != 1 {
+		t.Fatalf("starts=%d", starts)
+	}
+	close(release)
+	if !h.WaitSession("sess", 2*time.Second) {
+		t.Fatal("first continue did not finish")
+	}
+}
